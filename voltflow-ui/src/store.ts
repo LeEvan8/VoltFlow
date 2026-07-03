@@ -14,6 +14,14 @@ export interface GOOSEEdge {
   animated: boolean;
   label?: string;
   style?: object;
+  // Network parameters mapped down to the specific stream layer
+  network_details?: {
+    vlan_id: string;
+    vlan_priority: string;
+    mac_address: string;
+    appid: string;
+    config_rev: string;
+  };
 }
 
 export interface ValidationError {
@@ -56,7 +64,7 @@ export const useVoltFlowStore = create<VoltFlowUIState>((set, get) => ({
   fetchTopology: async () => {
     set({ loading: true });
     try {
-      // Connects directly to the Phase 1 Integration API Route
+      // Connects directly to the graph payload configuration route
       const res = await fetch('http://localhost:8000/api/v1/graph-data');
       if (!res.ok) throw new Error("Backend server unreachable");
       const data = await res.json();
@@ -69,13 +77,14 @@ export const useVoltFlowStore = create<VoltFlowUIState>((set, get) => ({
         position: { x: 100 + (index % 3) * 320, y: 150 + Math.floor(index / 3) * 220 }
       }));
 
-      // Map backend links seamlessly to React Flow edge parameters
+      // Map backend links seamlessly to React Flow edge parameters, passing network details cleanly
       const mappedEdges = data.edges.map((edge: any) => ({
         id: `e-${edge.id}`,
         source: edge.publisher,
         target: edge.subscriber,
         animated: true,
         label: edge.app_id,
+        network_details: edge.network_details, // Hooks network variables to dropdown matrices
         style: { stroke: '#38bdf8', strokeWidth: 2 } // Phase 2 default: Active Sky Blue wires
       }));
 

@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import ReactFlow, { Background, Controls } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { useVoltFlowStore } from './store';
@@ -9,11 +9,16 @@ export default function App() {
     fetchTopology, setSelectedIED, jumpToLine, setFilename, clearWorkspace 
   } = useVoltFlowStore();
 
+  const [expandedSignal, setExpandedSignal] = useState<string | null>(null);
+
   useEffect(() => {
     fetchTopology();
   }, [fetchTopology]);
 
-  // Synchronized filter logic: Isolates rule logs dynamically if an IED node is selected[cite: 1]
+  useEffect(() => {
+    setExpandedSignal(null);
+  }, [selectedIED]);
+
   const displayedErrors = selectedIED 
     ? errors.filter(err => err.ied_name === selectedIED)
     : errors;
@@ -22,7 +27,6 @@ export default function App() {
     if (!e.target.files?.[0]) return;
     const targetFile = e.target.files[0];
     
-    // Track filename globally to keep dynamic line resolution synchronized
     setFilename(targetFile.name);
     
     const formData = new FormData();
@@ -33,12 +37,14 @@ export default function App() {
         method: 'POST',
         body: formData,
       });
-      // Re-trigger global dashboard graph metrics refresh
       fetchTopology();
     } catch (err) {
       console.error("UI Ingestion Exception Error:", err);
     }
   };
+
+  const outboundEdges = edges.filter(e => e.source === selectedIED);
+  const inboundEdges = edges.filter(e => e.target === selectedIED);
 
   return (
     <div className="w-full h-screen bg-slate-950 text-slate-100 flex flex-col font-sans select-none overflow-hidden">
@@ -49,14 +55,13 @@ export default function App() {
           <h1 className="text-xl font-black tracking-tight text-sky-400 flex items-center gap-2">
             VoltFlow Workspace
             <span className="text-[10px] tracking-normal font-mono bg-amber-950/80 border border-amber-800 text-amber-300 px-2 py-0.5 rounded-md">
-              Phase 3 Sync Active
+              Strict Verification Mode
             </span>
           </h1>
-          <p className="text-xs text-slate-400 mt-0.5">Synchronized System Topology & Multi-Vendor Protection Rule Validation Panel[cite: 1]</p>
+          <p className="text-xs text-slate-400 mt-0.5">Synchronized System Topology & Multi-Vendor Protection Rule Validation Panel</p>
         </div>
         
         <div className="flex items-center gap-3">
-          {/* Dynamic Reset Session Controller */}
           {(nodes.length > 0 || errors.length > 0) && (
             <button 
               onClick={() => {
@@ -93,7 +98,7 @@ export default function App() {
       {/* Primary Workspace Grid Split Layout */}
       <div className="flex-1 flex overflow-hidden">
         
-        {/* Left Sidebar: Severity-Ranked Validation Error Panel[cite: 1] */}
+        {/* Left Sidebar: Severity-Ranked Validation Error Panel */}
         <div className="w-80 border-r border-slate-800 bg-slate-900/40 flex flex-col z-10">
           <div className="p-4 border-b border-slate-800 bg-slate-900/60 flex justify-between items-center">
             <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Diagnostic Rule Logs</span>
@@ -115,7 +120,6 @@ export default function App() {
                 <div 
                   key={err.id}
                   onClick={() => {
-                    // Bi-directional state jumping linkage engine[cite: 1]
                     jumpToLine(err.xpath);
                     setSelectedIED(err.ied_name);
                   }}
@@ -143,7 +147,7 @@ export default function App() {
         {/* Center Panel Stack: Network Canvas Flow + Code Context Inspector */}
         <div className="flex-1 flex flex-col overflow-hidden">
           
-          {/* React Flow Upper Frame Viewport Canvas[cite: 1] */}
+          {/* React Flow Upper Frame Viewport Canvas */}
           <div className="flex-1 min-h-[50%] bg-slate-950 relative">
             <ReactFlow
               nodes={nodes}
@@ -157,7 +161,7 @@ export default function App() {
             </ReactFlow>
           </div>
 
-          {/* Underlay Footer Panel: Interactive SCL Code Viewport Inspector[cite: 1] */}
+          {/* Underlay Footer Panel: Interactive SCL Code Viewport Inspector */}
           {activeErrorLine && (
             <div className="h-60 border-t border-slate-800 bg-slate-900/90 font-mono text-xs flex flex-col z-10 shadow-2xl">
               <div className="px-6 py-2 bg-slate-900 border-b border-slate-800/80 flex justify-between items-center shrink-0">
@@ -178,65 +182,143 @@ export default function App() {
           )}
         </div>
 
-        {/* Right Sidebar: Signaling Matrix Device Inspector[cite: 1] */}
+        {/* Right Sidebar: Device Inspector */}
         <div className="w-80 border-l border-slate-800 bg-slate-900/60 backdrop-blur-md p-6 flex flex-col justify-between shadow-2xl z-10 overflow-y-auto">
           <div className="space-y-6">
             <h2 className="text-xs font-bold uppercase tracking-widest text-slate-500">Device Inspector</h2>
             {selectedIED ? (
               <div className="space-y-5 animate-fadeIn">
-                {/* Device Identity Block */}
                 <div className="p-4 bg-slate-950/60 border border-slate-800 rounded-xl shadow-inner">
                   <div className="text-[10px] text-slate-500 uppercase font-mono tracking-wider">Active Device Node</div>
                   <div className="text-base font-black text-emerald-400 mt-1 font-mono break-all">{selectedIED}</div>
                 </div>
 
-                {/* Published Signals (Outbound Routes)[cite: 1] */}
+                {/* Published Signals */}
                 <div>
                   <h3 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2 flex items-center justify-between">
                     <span>Published Signals</span>
                     <span className="bg-sky-950 text-sky-400 text-[10px] px-1.5 py-0.5 rounded border border-sky-900 font-mono">
-                      {edges.filter(e => e.source === selectedIED).length} Out
+                      {outboundEdges.length} Out
                     </span>
                   </h3>
-                  <div className="space-y-1.5 max-h-32 overflow-y-auto pr-1">
-                    {edges.filter(e => e.source === selectedIED).length === 0 ? (
-                      <p className="text-[11px] text-slate-600 italic px-2">No outbound links tracked.</p>
+                  <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
+                    {outboundEdges.length === 0 ? (
+                      <p className="text-[11px] text-slate-600 italic px-2">No outbound streams compiled.</p>
                     ) : (
-                      edges.filter(e => e.source === selectedIED).map(edge => (
-                        <div key={edge.id} className="p-2 bg-slate-950/30 border border-slate-800/60 rounded-lg text-[10px] font-mono">
-                          <span className="text-sky-400 font-bold">cb: {edge.label || "GOOSE_CB"}</span>
-                          <div className="text-slate-500 text-[9px] mt-0.5">Dest → {edge.target}</div>
-                        </div>
-                      ))
+                      outboundEdges.map(edge => {
+                        const isExpanded = expandedSignal === edge.id;
+                        return (
+                          <div 
+                            key={edge.id} 
+                            onClick={() => setExpandedSignal(isExpanded ? null : edge.id)}
+                            className={`p-2.5 bg-slate-950/40 border rounded-xl cursor-pointer transition-all duration-150 ${
+                              isExpanded ? 'border-sky-500 bg-slate-950/90 shadow-lg' : 'border-slate-800 hover:border-slate-700'
+                            }`}
+                          >
+                            <div className="flex justify-between items-center text-[11px] font-mono">
+                              <span className="text-sky-400 font-bold">cb: {edge.label || "GOOSE_CB"}</span>
+                              <span className="text-[9px] text-slate-500">{isExpanded ? "▲ Hide" : "▼ Inspect"}</span>
+                            </div>
+                            <div className="text-slate-500 text-[9px] font-mono mt-0.5">Dest → {edge.target}</div>
+                            
+                            {isExpanded && (
+                              <div className="mt-3 pt-2.5 border-t border-slate-900 space-y-2 text-[10px] font-mono animate-fadeIn text-slate-300">
+                                <div className="flex justify-between border-b border-slate-900/40 pb-1">
+                                  <span className="text-slate-500">Config Revision:</span>
+                                  <span className="text-amber-400 font-bold">{edge.network_details?.config_rev}</span>
+                                </div>
+                                <div className="flex justify-between border-b border-slate-900/40 pb-1">
+                                  <span className="text-slate-500">APPID:</span>
+                                  <span className="text-sky-300 font-bold">{edge.network_details?.appid}</span>
+                                </div>
+                                <div className="flex justify-between border-b border-slate-900/40 pb-1">
+                                  <span className="text-slate-500">VLAN ID:</span>
+                                  <span className="text-emerald-400 font-bold">{edge.network_details?.vlan_id}</span>
+                                </div>
+                                <div className="flex justify-between border-b border-slate-900/40 pb-1">
+                                  <span className="text-slate-500">Priority:</span>
+                                  <span className="text-indigo-400 font-bold">{edge.network_details?.vlan_priority}</span>
+                                </div>
+                                <div className="flex flex-col gap-0.5 pt-0.5">
+                                  <span className="text-slate-500">Multicast MAC Address:</span>
+                                  <span className="text-[9px] bg-slate-950 p-1 rounded border border-slate-900 text-slate-400 tracking-tighter text-center select-all">
+                                    {edge.network_details?.mac_address}
+                                  </span>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })
                     )}
                   </div>
                 </div>
 
-                {/* Subscribed Inputs (Inbound Routes)[cite: 1] */}
+                {/* Subscribed Inputs */}
                 <div>
                   <h3 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2 flex items-center justify-between">
                     <span>Subscribed Inputs</span>
                     <span className="bg-emerald-950 text-emerald-400 text-[10px] px-1.5 py-0.5 rounded border border-emerald-900 font-mono">
-                      {edges.filter(e => e.target === selectedIED).length} In
+                      {inboundEdges.length} In
                     </span>
                   </h3>
-                  <div className="space-y-1.5 max-h-32 overflow-y-auto pr-1">
-                    {edges.filter(e => e.target === selectedIED).length === 0 ? (
-                      <p className="text-[11px] text-slate-600 italic px-2">No inbound links mapped.</p>
+                  <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
+                    {inboundEdges.length === 0 ? (
+                      <p className="text-[11px] text-slate-600 italic px-2">No inbound subscriptions mapped.</p>
                     ) : (
-                      edges.filter(e => e.target === selectedIED).map(edge => (
-                        <div key={edge.id} className="p-2 bg-slate-950/30 border border-slate-800/60 rounded-lg text-[10px] font-mono">
-                          <span className="text-emerald-400 font-bold">cb: {edge.label || "GOOSE_CB"}</span>
-                          <div className="text-slate-500 text-[9px] mt-0.5">Source ← {edge.source}</div>
-                        </div>
-                      ))
+                      inboundEdges.map(edge => {
+                        const isExpanded = expandedSignal === edge.id;
+                        return (
+                          <div 
+                            key={edge.id} 
+                            onClick={() => setExpandedSignal(isExpanded ? null : edge.id)}
+                            className={`p-2.5 bg-slate-950/40 border rounded-xl cursor-pointer transition-all duration-150 ${
+                              isExpanded ? 'border-emerald-500 bg-slate-950/90 shadow-lg' : 'border-slate-800 hover:border-slate-700'
+                            }`}
+                          >
+                            <div className="flex justify-between items-center text-[11px] font-mono">
+                              <span className="text-emerald-400 font-bold">cb: {edge.label || "GOOSE_CB"}</span>
+                              <span className="text-[9px] text-slate-500">{isExpanded ? "▲ Hide" : "▼ Inspect"}</span>
+                            </div>
+                            <div className="text-slate-500 text-[9px] font-mono mt-0.5">Source ← {edge.source}</div>
+                            
+                            {isExpanded && (
+                              <div className="mt-3 pt-2.5 border-t border-slate-900 space-y-2 text-[10px] font-mono animate-fadeIn text-slate-300">
+                                <div className="flex justify-between border-b border-slate-900/40 pb-1">
+                                  <span className="text-slate-500">Config Revision:</span>
+                                  <span className="text-amber-400 font-bold">{edge.network_details?.config_rev}</span>
+                                </div>
+                                <div className="flex justify-between border-b border-slate-900/40 pb-1">
+                                  <span className="text-slate-500">APPID:</span>
+                                  <span className="text-sky-300 font-bold">{edge.network_details?.appid}</span>
+                                </div>
+                                <div className="flex justify-between border-b border-slate-900/40 pb-1">
+                                  <span className="text-slate-500">VLAN ID:</span>
+                                  <span className="text-emerald-400 font-bold">{edge.network_details?.vlan_id}</span>
+                                </div>
+                                <div className="flex justify-between border-b border-slate-900/40 pb-1">
+                                  <span className="text-slate-500">Priority:</span>
+                                  <span className="text-indigo-400 font-bold">{edge.network_details?.vlan_priority}</span>
+                                </div>
+                                <div className="flex flex-col gap-0.5 pt-0.5">
+                                  <span className="text-slate-500">Source MAC Target:</span>
+                                  <span className="text-[9px] bg-slate-950 p-1 rounded border border-slate-900 text-slate-400 tracking-tighter text-center select-all">
+                                    {edge.network_details?.mac_address}
+                                  </span>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })
                     )}
                   </div>
                 </div>
+
               </div>
             ) : (
               <div className="text-xs text-slate-400/60 italic p-4 bg-slate-950/40 rounded-xl border border-slate-900/60 text-center leading-relaxed">
-                Select any protection relay on the canvas to isolate its active routing paths[cite: 1].
+                Select any protection relay on the canvas to isolate its active routing paths.
               </div>
             )}
           </div>
