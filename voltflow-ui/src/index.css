@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background-color: #020617; /* Slate 950 */
+}
+
+/* Force React Flow Control Icon SVGs to render in black */
+.react-flow__controls button svg {
+  fill: #0f172a !important;   /* Slate 900 */
+  color: #0f172a !important;
+}
+
+/* Optional: Adjust button background for clear visibility */
+.react-flow__controls button {
+  background-color: #f8fafc !important; /* Slate 50 */
+  border-bottom: 1px solid #cbd5e1 !important;
+}

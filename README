@@ -1,0 +1,5 @@
+in root directory, run:
+uvicorn app.main:app --reload --port 8000
+
+cd voltflow-ui 
+npm run dev
