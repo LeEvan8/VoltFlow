@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <SCL version="2007" revision="B" xmlns="http://www.iec.ch/61850/2003/SCL" xsi:schemaLocation="http://www.iec.ch/61850/2003/SCL SCL.xsd" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:IEC_60870_5_104="http://www.iec.ch/61850-80-1/2007/SCL" xmlns:siebase="http://www.siemens.com/energy/2009/09/siprotec5/SieBase" xmlns:siedig="http://www.siemens.com/energy/2011/11/Siedig" xmlns:esel="http://www.selinc.com/2006/61850">
 	<Private type="Siemens-SclLib-V5-Version">V09.90.06.000</Private>
-	<Private type="Siemens-SclLib-V5-EditTime">22.06.2026 10:55:34</Private>
+	<Private type="Siemens-SclLib-V5-EditTime">03.07.2026 18:11:51</Private>
 	<Private type="Siemens-Configurator-Version">7.90.58</Private>
-	<Header id="E01F87T" version="1" revision="19" toolID="IEC 61850 System Configurator, Version: 7.90.58" nameStructure="IEDName">
+	<Header id="E01F87T" version="1" revision="21" toolID="IEC 61850 System Configurator, Version: 7.90.58" nameStructure="IEDName">
 		<Text>Cid-File for device: E01F87T</Text>
 		<History>
-			<Hitem version="1" revision="19" when="Monday, June 22, 2026 10:55:33 AM" who="Licenced User:  User Machine: DESKTOP-V2BVQL0 User: User" what="Device E01F87T is exported as Edition2B CID file." why="IEC 61850 System Configurator User Action" />
+			<Hitem version="1" revision="21" when="Friday, July 3, 2026 6:11:50 PM" who="Licenced User:  User Machine: DESKTOP-V2BVQL0 User: User" what="Device E01F87T is exported as Edition2B CID file." why="IEC 61850 System Configurator User Action" />
 		</History>
 	</Header>
 	<Communication>
@@ -4556,8 +4556,8 @@
 							<Private type="Siemens-GUID">d706ae4e64d446bd8f06659cde2508b1</Private>
 							<FCDA ldInst="UD1" prefix="" lnClass="USER" lnInst="1" doName="FirstGoose" daName="stVal" fc="ST" />
 							<FCDA ldInst="UD1" prefix="" lnClass="USER" lnInst="1" doName="FirstGoose" daName="q" fc="ST" />
-							<FCDA ldInst="PTS1_5051OC3phase1" prefix="ID_" lnClass="PTOC" lnInst="1" doName="Op" daName="general" fc="ST" />
-							<FCDA ldInst="PTS1_5051OC3phase1" prefix="ID_" lnClass="PTOC" lnInst="1" doName="Op" daName="q" fc="ST" />
+							<FCDA ldInst="UD1" prefix="" lnClass="USER" lnInst="1" doName="SPS" daName="stVal" fc="ST" />
+							<FCDA ldInst="UD1" prefix="" lnClass="USER" lnInst="1" doName="SPS" daName="q" fc="ST" />
 						</DataSet>
 						<DOI name="Mod" desc="Mode (status only)" />
 						<DOI name="Beh" desc="Behavior" />
@@ -4575,7 +4575,7 @@
 								<Val>@Application</Val>
 							</DAI>
 						</DOI>
-						<GSEControl datSet="DataSet" confRev="40001" type="GOOSE" appID="E01F87T/UD1/LLN0/Control_DataSet" name="Control_DataSet">
+						<GSEControl datSet="DataSet" confRev="20001" type="GOOSE" appID="E01F87T/UD1/LLN0/Control_DataSet" name="Control_DataSet">
 							<IEDName apRef="S1">SEL_751_1</IEDName>
 						</GSEControl>
 					</LN0>
@@ -4601,7 +4601,7 @@
 							</DAI>
 						</DOI>
 					</LN>
-					<LN prefix="" lnClass="USER" inst="1" lnType="SIPROTEC5_LNType_USER_Universal" desc="Binary Inputs">
+					<LN prefix="" lnClass="USER" inst="1" lnType="SIPROTEC5_1000" desc="Binary Inputs">
 						<Private type="Siemens-MasterId">9c4dd55b-6598-40df-bf08-b8b5a9fe999a</Private>
 						<DOI name="Mod" desc="Mode (controllable)" />
 						<DOI name="Beh" desc="Behavior" />
@@ -4621,6 +4621,7 @@
 								<Val>SIPROTEC5/userdefined</Val>
 							</DAI>
 						</DOI>
+						<DOI name="SPS1" desc="GOOSE Error" />
 						<Inputs>
 							<ExtRef desc="Goose From SEL" iedName="SEL_751_1" ldInst="ANN" prefix="LT" lnClass="GGIO" lnInst="5" doName="Ind01" daName="stVal" intAddr="RxInd011;/Ind/stVal" serviceType="GOOSE" srcLDInst="CFG" srcLNClass="LLN0" srcCBName="New" />
 							<ExtRef desc="Goose From SEL" iedName="SEL_751_1" ldInst="ANN" prefix="LT" lnClass="GGIO" lnInst="5" doName="Ind01" daName="q" intAddr="RxInd011;/Ind/q" serviceType="GOOSE" srcLDInst="CFG" srcLNClass="LLN0" srcCBName="New" />
@@ -5932,6 +5933,94 @@
 						</DOI>
 					</LN>
 				</LDevice>
+				<LDevice desc="110kV Side_81UB 1" inst="PTS2_81UnderfrequB1">
+					<Private type="Siemens-MasterId">ae3900f5-e36d-4956-bbe1-aead29e7484f</Private>
+					<LN0 lnClass="LLN0" inst="" lnType="SIPROTEC5_LNType_LLN0_LDevice_Generic" desc="PTS2_81UnderfrequB1/LLN0/LLN0">
+						<Private type="Siemens-MasterId">c89e9bc6-629b-40ab-a0db-544bd1e60a6d</Private>
+						<DOI name="Mod" desc="Mode (status only)" />
+						<DOI name="Beh" desc="Behavior" />
+						<DOI name="Health" desc="Health" />
+						<DOI name="NamPlt" desc="Name plate">
+							<DAI name="configRev">
+								<Val>2026-07-03 10:09:59</Val>
+							</DAI>
+							<DAI name="ldNs">
+								<Val>IEC 61850-7-4:2007</Val>
+							</DAI>
+						</DOI>
+						<DOI name="GrRef" desc="GrRef">
+							<DAI name="setSrcRef">
+								<Val>@PTS2</Val>
+							</DAI>
+						</DOI>
+					</LN0>
+					<LN prefix="PUFB_" lnClass="GAPC" inst="1" lnType="SIPROTEC5_LNType_GAPC_FB0_FGBreaker_3pol" desc="General">
+						<Private type="Siemens-MasterId">b87655a3-0ba5-4d94-b107-4bd4123c0982</Private>
+						<DOI name="Mod" desc="Mode (status only)" />
+						<DOI name="Beh" desc="Behavior" />
+						<DOI name="Health" desc="Health" />
+						<DOI name="NamPlt" desc="Name plate">
+							<DAI name="configRev">
+								<Val>2026-07-03 10:09:59</Val>
+							</DAI>
+						</DOI>
+					</LN>
+					<LN prefix="" lnClass="PTRC" inst="1" lnType="SIPROTEC5_LNType_PTRC" desc="Group indicat.">
+						<Private type="Siemens-MasterId">4f63902e-bc3f-4350-89ce-ee4865af8304</Private>
+						<DOI name="Mod" desc="Mode (status only)" />
+						<DOI name="Beh" desc="Behavior" />
+						<DOI name="Health" desc="Health" />
+						<DOI name="NamPlt" desc="Name plate">
+							<DAI name="configRev">
+								<Val>2026-07-03 10:09:59</Val>
+							</DAI>
+						</DOI>
+						<DOI name="Op" desc="Operate" />
+						<DOI name="Str" desc="Pickup" />
+					</LN>
+					<LN prefix="B_" lnClass="PTUF" inst="1" lnType="SIPROTEC5_LNType_PTUF" desc="Stage 1">
+						<Private type="Siemens-MasterId">26ee6bdb-d85e-441b-9e7e-0fb52e9216f8</Private>
+						<DOI name="Mod" desc="Mode (controllable)" />
+						<DOI name="Beh" desc="Behavior" />
+						<DOI name="Health" desc="Health" />
+						<DOI name="NamPlt" desc="Name plate">
+							<DAI name="configRev">
+								<Val>2026-07-03 10:09:59</Val>
+							</DAI>
+						</DOI>
+						<DOI name="Str" desc="Pickup" />
+						<DOI name="Op" desc="Operate" />
+						<DOI name="Blk" desc="&gt;Block stage" />
+					</LN>
+					<LN prefix="B_" lnClass="PTUF" inst="2" lnType="SIPROTEC5_LNType_PTUF" desc="Stage 2">
+						<Private type="Siemens-MasterId">742a2c6a-ab68-47ba-9d61-ec42426d9591</Private>
+						<DOI name="Mod" desc="Mode (controllable)" />
+						<DOI name="Beh" desc="Behavior" />
+						<DOI name="Health" desc="Health" />
+						<DOI name="NamPlt" desc="Name plate">
+							<DAI name="configRev">
+								<Val>2026-07-03 10:09:59</Val>
+							</DAI>
+						</DOI>
+						<DOI name="Str" desc="Pickup" />
+						<DOI name="Op" desc="Operate" />
+						<DOI name="Blk" desc="&gt;Block stage" />
+					</LN>
+					<LN prefix="B_" lnClass="PTUF" inst="3" lnType="SIPROTEC5_LNType_PTUF" desc="Stage 3">
+						<Private type="Siemens-MasterId">d256875a-3ad8-466f-8945-6eeb19842191</Private>
+						<DOI name="Mod" desc="Mode (controllable)" />
+						<DOI name="Beh" desc="Behavior" />
+						<DOI name="Health" desc="Health" />
+						<DOI name="NamPlt" desc="Name plate">
+							<DAI name="configRev">
+								<Val>2026-07-03 10:09:59</Val>
+							</DAI>
+						</DOI>
+						<DOI name="Str" desc="Pickup" />
+						<DOI name="Op" desc="Operate" />
+						<DOI name="Blk" desc="&gt;Block stage" />
+					</LN>
+				</LDevice>
 			</Server>
 		</AccessPoint>
 	</IED>
@@ -5988,8 +6077,8 @@
 			<esel:QualityProcessing address="VB002" value="q=0x1807" />
 		</Private>
 		<Private type="Siemens-IED-Id">SEL_751_1</Private>
-		<Private type="Siemens-ModifiedDate">06/16/2026 03:42:04</Private>
-		<Private type="Siemens-ModificationCounter">12</Private>
+		<Private type="Siemens-ModifiedDate">06/25/2026 02:43:26</Private>
+		<Private type="Siemens-ModificationCounter">14</Private>
 		<Services nameLength="64">
 			<DynAssociation max="7" />
 			<SettingGroups />
@@ -6849,7 +6938,7 @@
 			<DO name="Ind31" type="SPS_0" />
 			<DO name="Ind32" type="SPS_0" />
 		</LNodeType>
-		<LNodeType id="SIPROTEC5_LNType_USER_Universal" lnClass="USER">
+		<LNodeType id="SIPROTEC5_1000" lnClass="USER">
 			<DO name="Mod" type="SIPROTEC5_DOType_Mod_controllable_with_InitVal_V09.90.01_V09.90.01" />
 			<DO name="Beh" type="SIPROTEC5_DOType_ENS_Behavior_V09.90.01_V09.90.01" />
 			<DO name="Health" type="SIPROTEC5_DOType_ENS_Health_V09.90.01_V09.90.01" />
@@ -6857,6 +6946,24 @@
 			<DO name="SPS" type="SIPROTEC5_DOType_SPS_UDEF_with_dataNs_V09.90.01_V09.90.01" />
 			<DO name="FirstGoose" type="SIPROTEC5_DOType_SPS_UDEF_with_dataNs_V09.90.01_V09.90.01" />
 			<DO name="RxInd011" type="SIPROTEC5_DOType_SPS_with_dataNs_V09.90.01_V09.90.01" />
+			<DO name="SPS1" type="SIPROTEC5_DOType_SPS_UDEF_with_dataNs_V09.90.01_V09.90.01" />
+		</LNodeType>
+		<LNodeType id="SIPROTEC5_LNType_PTRC" lnClass="PTRC">
+			<DO name="Mod" type="SIPROTEC5_DOType_Mod_status_only_with_InitVal_V09.90.01_V09.90.01" />
+			<DO name="Beh" type="SIPROTEC5_DOType_ENS_Behavior_V09.90.01_V09.90.01" />
+			<DO name="Health" type="SIPROTEC5_DOType_ENS_Health_V09.90.01_V09.90.01" />
+			<DO name="NamPlt" type="SIPROTEC5_DOType_LPL_NamPlt_V09.90.01_V09.90.01" />
+			<DO name="Op" type="SIPROTEC5_DOType_ACT_3pol_V09.90.01_V09.90.01" />
+			<DO name="Str" type="SIPROTEC5_DOType_ACD_NonPhsSel_Without_DirRouting_V09.90.01_V09.90.01" />
+		</LNodeType>
+		<LNodeType id="SIPROTEC5_LNType_PTUF" lnClass="PTUF">
+			<DO name="Mod" type="SIPROTEC5_DOType_Mod_controllable_with_InitVal_V09.90.01_V09.90.01" />
+			<DO name="Beh" type="SIPROTEC5_DOType_ENS_Behavior_V09.90.01_V09.90.01" />
+			<DO name="Health" type="SIPROTEC5_DOType_ENS_Health_V09.90.01_V09.90.01" />
+			<DO name="NamPlt" type="SIPROTEC5_DOType_LPL_NamPlt_for_Ed2_LN_V09.90.01_V09.90.01" />
+			<DO name="Str" type="SIPROTEC5_DOType_ACD_NonPhsSel_Without_DirRouting_V09.90.01_V09.90.01" />
+			<DO name="Op" type="SIPROTEC5_DOType_ACT_3pol_V09.90.01_V09.90.01" />
+			<DO name="Blk" type="SIPROTEC5_DOType_SPS_for_Input_V09.90.01_V09.90.01" />
 		</LNodeType>
 		<DOType id="SIPROTEC5_DOType_SPG_readOnly_with_dataNs_V09.90.01_V09.90.01" cdc="SPG">
 			<DA fc="SE" name="setVal" bType="BOOLEAN" valKind="RO" />

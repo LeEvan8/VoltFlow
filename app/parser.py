@@ -17,7 +17,10 @@ def strip_namespaces(root):
     return root
 
 def parse_and_validate_scl(file_path: str):
-    """Core multi-vendor validation loops targeting structural schema properties."""
+    """ 
+    Decoupled Cross-Vendor Multi-File Engine.
+    Indexes all files globally first, then validates parameter matrices cross-file.
+    """
     conn = get_db_connection()
     cursor = conn.cursor()
     
@@ -28,9 +31,13 @@ def parse_and_validate_scl(file_path: str):
     cursor.execute("DELETE FROM goose_links")
     cursor.execute("DELETE FROM validation_errors")
     
-    ied_inventory = {}
-    
-    # Pass 1: Global Device Ingestion
+    # Global lookup tables to hold exact specifications extracted across all vendor files
+    global_publisher_matrix = {}
+    ied_file_map = {}
+
+    # -----------------------------------------------------------------
+    # PASS 1: Global Multi-Vendor Parameter Indexing (Build the Matrix)
+    # -----------------------------------------------------------------
     for filename in all_files:
         current_path = os.path.join(UPLOAD_DIR, filename)
         try:
@@ -38,23 +45,22 @@ def parse_and_validate_scl(file_path: str):
             tree = etree.parse(current_path, parser=parser)
             root = strip_namespaces(tree.getroot())
             
+            # Map physical IED profiles
             for ied_elem in root.findall(".//IED"):
                 ied_name = ied_elem.get("name")
                 if ied_name:
-                    if ied_name not in ied_inventory:
-                        ied_inventory[ied_name] = {
-                            "version": ied_elem.get("configVersion", "TBC"),
-                            "file": filename,
-                            "cb_versions": {}
-                        }
+                    ied_file_map[ied_name] = filename
                     cursor.execute(
                         "INSERT OR REPLACE INTO ieds (name, type, subnetwork) VALUES (?, ?, ?)",
                         (ied_name, ied_elem.get("type", "Protection_Relay"), "Subnetwork_Alpha")
                     )
+                    if ied_name not in global_publisher_matrix:
+                        global_publisher_matrix[ied_name] = {}
             
+            # Harvest individual GOOSE Control Block revisions
             for gse_cb in root.findall(".//GSEControl"):
                 cb_name = gse_cb.get("name")
-                conf_rev = gse_cb.get("confRev")
+                conf_rev = gse_cb.get("confRev")  # None if absent - caught explicitly in Pass 2
                 
                 parent = gse_cb.getparent()
                 ied_ref = None
@@ -64,103 +70,62 @@ def parse_and_validate_scl(file_path: str):
                         break
                     parent = parent.getparent()
                 
-                if ied_ref and cb_name and conf_rev:
-                    if ied_ref in ied_inventory:
-                        ied_inventory[ied_ref]["cb_versions"][cb_name] = str(conf_rev)
-        except Exception as e:
-            print(f"Pass 1 Error on {filename}: {str(e)}")
+                if ied_ref and cb_name:
+                    if cb_name not in global_publisher_matrix[ied_ref]:
+                        global_publisher_matrix[ied_ref][cb_name] = {
+                            "mac": "TBC", "vlan_id": "TBC", "priority": "TBC", "appid": "TBC", 
+                            "conf_rev": str(conf_rev) if conf_rev is not None else "MISSING", 
+                            "file": filename
+                        }
+                    else:
+                        global_publisher_matrix[ied_ref][cb_name]["conf_rev"] = str(conf_rev) if conf_rev is not None else "MISSING"
 
-    # Pass 2: Parameter Verification Checks
-    for filename in all_files:
-        current_path = os.path.join(UPLOAD_DIR, filename)
-        try:
-            tree = etree.parse(current_path)
-            root = strip_namespaces(tree.getroot())
-            
+            # Harvest communications box network settings (MAC, VLAN, Priority, APPID)
             for gse in root.findall(".//ConnectedAP/GSE"):
                 cb_name = gse.get("cbName")
                 cap = gse.getparent()
-                ied_ref = cap.get("iedName", "Unknown_IED")
+                ied_ref = cap.get("iedName")
                 
-                appid_elem = gse.find(".//P[@type='APPID']")
-                if appid_elem is not None and appid_elem.text:
-                    appid_val = appid_elem.text.strip()
-                    xpath = f"{filename}||{tree.getpath(appid_elem)}"
-                    try:
-                        appid_int = int(appid_val, 16) if appid_val.lower().startswith('0x') else int(appid_val, 10)
-                        if not (0x8000 <= appid_int <= 0xBFFF):
-                            cursor.execute(
-                                """INSERT INTO validation_errors (ied_name, severity, rule_type, message, xpath) 
-                                   VALUES (?, ?, ?, ?, ?)""",
-                                (ied_ref, "WARNING", "APPID_OUT_OF_BOUNDS", 
-                                 f"GOOSE APPID '{appid_val}' for control block '{cb_name}' deviates from standard parameters (0x8000 - 0xBFFF).", xpath)
-                            )
-                    except ValueError:
-                        pass
+                if ied_ref and cb_name:
+                    if ied_ref not in global_publisher_matrix:
+                        global_publisher_matrix[ied_ref] = {}
+                    if cb_name not in global_publisher_matrix[ied_ref]:
+                        global_publisher_matrix[ied_ref][cb_name] = {
+                            "mac": "TBC", "vlan_id": "TBC", "priority": "TBC", "appid": "TBC", "conf_rev": "MISSING", "file": filename
+                        }
+                    
+                    mac_elem = gse.find(".//P[@type='MAC-Address']")
+                    vlan_elem = gse.find(".//P[@type='VLAN-ID']")
+                    pri_elem = gse.find(".//P[@type='VLAN-PRIORITY']")
+                    appid_elem = gse.find(".//P[@type='APPID']")
+                    
+                    if mac_elem is not None and mac_elem.text:
+                        global_publisher_matrix[ied_ref][cb_name]["mac"] = mac_elem.text.strip().replace("-", ":").upper()
+                    if vlan_elem is not None and vlan_elem.text:
+                        global_publisher_matrix[ied_ref][cb_name]["vlan_id"] = vlan_elem.text.strip()
+                    if pri_elem is not None and pri_elem.text:
+                        global_publisher_matrix[ied_ref][cb_name]["priority"] = pri_elem.text.strip()
+                    if appid_elem is not None and appid_elem.text:
+                        global_publisher_matrix[ied_ref][cb_name]["appid"] = appid_elem.text.strip()
 
-                priority_elem = gse.find(".//P[@type='VLAN-PRIORITY']")
-                if priority_elem is not None and priority_elem.text:
-                    pri_val = priority_elem.text.strip()
-                    xpath = f"{filename}||{tree.getpath(priority_elem)}"
-                    try:
-                        pri_int = int(pri_val)
-                        if pri_int < 4 or pri_int > 7:
-                            cursor.execute(
-                                """INSERT INTO validation_errors (ied_name, severity, rule_type, message, xpath) 
-                                   VALUES (?, ?, ?, ?, ?)""",
-                                (ied_ref, "WARNING", "VLAN_PRIORITY_LOW", 
-                                 f"VLAN Priority '{pri_val}' on '{cb_name}' is set below the recommended threshold (4-7) for critical routing.", xpath)
-                            )
-                    except ValueError:
-                        pass
-
-            for vlan_elem in root.findall(".//Address/P[@type='VLAN-ID']"):
-                vlan_id = vlan_elem.text
-                xpath = f"{filename}||{tree.getpath(vlan_elem)}"
-                cap = vlan_elem.getparent().getparent().getparent()
-                ied_ref = cap.get("iedName", "Unknown_IED")
-                if vlan_id:
-                    try:
-                        vlan_int = int(vlan_id, 16) if vlan_id.lower().startswith('0x') else int(vlan_id)
-                        if vlan_int < 1 or vlan_int > 4095:
-                            raise ValueError()
-                    except ValueError:
-                        cursor.execute(
-                            """INSERT INTO validation_errors (ied_name, severity, rule_type, message, xpath) 
-                               VALUES (?, ?, ?, ?, ?)""",
-                            (ied_ref, "WARNING", "VLAN_OUT_OF_RANGE", 
-                             f"VLAN ID '{vlan_id}' is invalid or out of standard IEEE 802.1Q bounds (1-4095).", xpath)
-                        )
-
-            for mac_elem in root.findall(".//Address/P[@type='MAC-Address']"):
-                mac_address = mac_elem.text
-                xpath = f"{filename}||{tree.getpath(mac_elem)}"
-                cap = mac_elem.getparent().getparent().getparent()
-                ied_ref = cap.get("iedName", "Unknown_IED")
-                if mac_address:
-                    clean_mac = mac_address.replace("-", ":").upper()
-                    if not clean_mac.startswith("01:0C:CD:01"):
-                        cursor.execute(
-                            """INSERT INTO validation_errors (ied_name, severity, rule_type, message, xpath) 
-                               VALUES (?, ?, ?, ?, ?)""",
-                            (ied_ref, "WARNING", "MAC_OUT_OF_RANGE", 
-                             f"Multicast MAC address '{mac_address}' deviates from standard IEC 61850 GOOSE allocation parameters.", xpath)
-                        )
         except Exception as e:
-            print(f"Pass 2 Error on {filename}: {str(e)}")
+            print(f"[Pass 1 Error] Parsing failed for {filename}: {str(e)}")
 
-    # Pass 3: Links Verification
+    # -----------------------------------------------------------------
+    # PASS 2: Multi-File Cross-Validation & Link Analysis
+    # -----------------------------------------------------------------
     for filename in all_files:
         current_path = os.path.join(UPLOAD_DIR, filename)
         try:
             tree = etree.parse(current_path)
             root = strip_namespaces(tree.getroot())
             
+            # Inspect every subscriber mapping node
             for extref in root.findall(".//ExtRef"):
                 publisher_ied = extref.get("iedName")
                 cb_name = extref.get("srcCBName")
-                expected_rev = extref.get("srcSubVersion")
                 
+                # Identify the subscriber IED tracking this input block
                 ancestor = extref.getparent()
                 subscriber_ied = None
                 while ancestor is not None:
@@ -169,40 +134,113 @@ def parse_and_validate_scl(file_path: str):
                         break
                     ancestor = ancestor.getparent()
                     
-                if not subscriber_ied or not publisher_ied:
+                if not subscriber_ied or not publisher_ied or not cb_name:
                     continue
                     
                 xpath = f"{filename}||{tree.getpath(extref)}"
-                app_id = cb_name if cb_name else "GOOSE_CB"
                 
+                # Commit wire linkage directly to database
                 cursor.execute(
                     "INSERT INTO goose_links (publisher, subscriber, app_id, xpath) VALUES (?, ?, ?, ?)",
-                    (publisher_ied, subscriber_ied, app_id, xpath)
+                    (publisher_ied, subscriber_ied, cb_name, xpath)
                 )
                 
-                if publisher_ied not in ied_inventory:
+                # CRITICAL RULE 1: Missing Publisher IED Verification
+                if publisher_ied not in global_publisher_matrix:
                     cursor.execute(
                         """INSERT INTO validation_errors (ied_name, severity, rule_type, message, xpath) 
                            VALUES (?, ?, ?, ?, ?)""",
                         (subscriber_ied, "ERROR", "EXTREF_UNKNOWN_IED", 
-                         f"Subscriber expects signals from publisher '{publisher_ied}', which is missing from all uploaded configurations.", xpath)
+                         f"Cross-File Error: Subscriber '{subscriber_ied}' expects signals from publisher '{publisher_ied}', but that device profile cannot be found in any uploaded configurations.", xpath)
                     )
-                else:
-                    actual_cb_versions = ied_inventory[publisher_ied]["cb_versions"]
-                    actual_rev = actual_cb_versions.get(cb_name) if cb_name else None
-                    if not actual_rev:
-                        actual_rev = ied_inventory[publisher_ied]["version"]
-                        
-                    if expected_rev and str(expected_rev) != str(actual_rev):
-                        pub_file = ied_inventory[publisher_ied]["file"]
+                    continue
+                
+                # CRITICAL RULE 2: Missing Control Block Verification
+                if cb_name not in global_publisher_matrix[publisher_ied]:
+                    cursor.execute(
+                        """INSERT INTO validation_errors (ied_name, severity, rule_type, message, xpath) 
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (subscriber_ied, "ERROR", "MISSING_CONTROL_BLOCK", 
+                         f"Cross-File Error: Subscriber '{subscriber_ied}' targets control block '{cb_name}' on publisher '{publisher_ied}', but that block does not exist.", xpath)
+                    )
+                    continue
+                
+                # Pull verified publisher specifications from global lookup matrix
+                pub_specs = global_publisher_matrix[publisher_ied][cb_name]
+                pub_file = pub_specs["file"]
+                
+                # CORRECTED RULE 3: Actual Configuration Revision Space Verification
+                actual_rev = pub_specs["conf_rev"]
+                if actual_rev == "MISSING":
+                    cursor.execute(
+                        """INSERT INTO validation_errors (ied_name, severity, rule_type, message, xpath) 
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (publisher_ied, "ERROR", "CONF_REV_MISSING", 
+                         f"Publisher '{publisher_ied}' control block '{cb_name}' (in '{pub_file}') has no confRev declared. Subscribers will reject its GOOSE messages.", xpath)
+                    )
+                elif actual_rev == "0":
+                    cursor.execute(
+                        """INSERT INTO validation_errors (ied_name, severity, rule_type, message, xpath) 
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (publisher_ied, "WARNING", "CONF_REV_ZERO", 
+                         f"Publisher '{publisher_ied}' control block '{cb_name}' has confRev=0. This is the SCL default — the dataset has likely never been commissioned.", xpath)
+                    )
+
+                # CRITICAL RULE 4: Cross-File Network Space Validation (MAC Address Range)
+                if pub_specs["mac"] != "TBC" and not pub_specs["mac"].startswith("01:0C:CD:01"):
+                    cursor.execute(
+                        """INSERT INTO validation_errors (ied_name, severity, rule_type, message, xpath) 
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (publisher_ied, "WARNING", "MAC_OUT_OF_RANGE", 
+                         f"Network Mismatch on block '{cb_name}': Multicast MAC address '{pub_specs['mac']}' deviates from standard IEC 61850 parameters.", xpath)
+                    )
+
+                # CRITICAL RULE 5: Cross-File VLAN ID Range Validation
+                if pub_specs["vlan_id"] != "TBC":
+                    try:
+                        vlan_val = pub_specs["vlan_id"]
+                        vlan_int = int(vlan_val, 16) if vlan_val.lower().startswith('0x') else int(vlan_val)
+                        if vlan_int < 1 or vlan_int > 4095:
+                            raise ValueError()
+                    except ValueError:
                         cursor.execute(
                             """INSERT INTO validation_errors (ied_name, severity, rule_type, message, xpath) 
                                VALUES (?, ?, ?, ?, ?)""",
-                            (subscriber_ied, "WARNING", "CONF_REV_MISMATCH", 
-                             f"Version Skew! Subscriber expects revision '{expected_rev}' for block '{cb_name}', but publisher file '{pub_file}' registers version '{actual_rev}'.", xpath)
+                            (publisher_ied, "ERROR", "VLAN_OUT_OF_RANGE", 
+                             f"Network Mismatch on block '{cb_name}': VLAN ID '{pub_specs['vlan_id']}' falls outside valid IEEE 802.1Q limits (1-4095).", xpath)
                         )
+
+                # CRITICAL RULE 6: Cross-File VLAN Priority Threshold Verification
+                if pub_specs["priority"] != "TBC":
+                    try:
+                        pri_int = int(pub_specs["priority"])
+                        if pri_int < 4 or pri_int > 7:
+                            cursor.execute(
+                                """INSERT INTO validation_errors (ied_name, severity, rule_type, message, xpath) 
+                                   VALUES (?, ?, ?, ?, ?)""",
+                                (publisher_ied, "WARNING", "VLAN_PRIORITY_LOW", 
+                                 f"Performance Hazard on block '{cb_name}': VLAN Priority '{pub_specs['priority']}' is lower than recommended bounds (4-7) for critical protection messages.", xpath)
+                            )
+                    except ValueError:
+                        pass
+
+                # CRITICAL RULE 7: Cross-File APPID Hex Domain Validation
+                if pub_specs["appid"] != "TBC":
+                    try:
+                        ap_val = pub_specs["appid"]
+                        appid_int = int(ap_val, 16) if ap_val.lower().startswith('0x') else int(ap_val, 10)
+                        if not (0x8000 <= appid_int <= 0xBFFF):
+                            cursor.execute(
+                                """INSERT INTO validation_errors (ied_name, severity, rule_type, message, xpath) 
+                                   VALUES (?, ?, ?, ?, ?)""",
+                                (publisher_ied, "WARNING", "APPID_OUT_OF_BOUNDS", 
+                                 f"Network Mismatch on block '{cb_name}': APPID '{pub_specs['appid']}' deviates from standardized GOOSE space allocation limits (0x8000 - 0xBFFF).", xpath)
+                            )
+                    except ValueError:
+                        pass
+
         except Exception as e:
-            print(f"Pass 3 Error on {filename}: {str(e)}")
+            print(f"[Pass 2 Error] Validation matrix analysis failed for {filename}: {str(e)}")
             
     conn.commit()
     conn.close()

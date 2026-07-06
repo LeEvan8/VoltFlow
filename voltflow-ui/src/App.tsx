@@ -20,13 +20,12 @@ export default function App() {
   }, [selectedIED]);
 
   const displayedErrors = selectedIED 
-    ? errors.filter(err => err.ied_name === selectedIED)
+    ? errors.filter(err => err.ied_name === selectedIED || err.message.includes(`'${selectedIED}'`))
     : errors;
 
   const handleUiFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.[0]) return;
     const targetFile = e.target.files[0];
-    
     setFilename(targetFile.name);
     
     const formData = new FormData();
@@ -49,16 +48,15 @@ export default function App() {
   return (
     <div className="w-full h-screen bg-slate-950 text-slate-100 flex flex-col font-sans select-none overflow-hidden">
       
-      {/* Topology Header Control Bar */}
       <header className="px-6 py-4 bg-slate-900 border-b border-slate-800 flex justify-between items-center shadow-md z-10">
         <div>
           <h1 className="text-xl font-black tracking-tight text-sky-400 flex items-center gap-2">
             VoltFlow Workspace
-            <span className="text-[10px] tracking-normal font-mono bg-amber-950/80 border border-amber-800 text-amber-300 px-2 py-0.5 rounded-md">
-              Strict Verification Mode
+            <span className="text-[10px] tracking-normal font-mono bg-emerald-950/80 border border-emerald-800 text-emerald-300 px-2 py-0.5 rounded-md">
+              True Decoupled Cross-Validation Active
             </span>
           </h1>
-          <p className="text-xs text-slate-400 mt-0.5">Synchronized System Topology & Multi-Vendor Protection Rule Validation Panel</p>
+          <p className="text-xs text-slate-400 mt-0.5">Multi-Vendor Protection Substation Rule Inspector Matrix</p>
         </div>
         
         <div className="flex items-center gap-3">
@@ -77,36 +75,22 @@ export default function App() {
 
           <label className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-semibold rounded-lg cursor-pointer transition-colors">
             <span>📂 Load SCL Document</span>
-            <input 
-              type="file" 
-              accept=".scd,.cid,.icd,.xml" 
-              onChange={handleUiFileUpload} 
-              className="hidden" 
-            />
+            <input type="file" accept=".scd,.cid,.icd,.xml" onChange={handleUiFileUpload} className="hidden" />
           </label>
           
-          <button 
-            onClick={() => fetchTopology()} 
-            disabled={loading}
-            className="px-4 py-1.5 bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-xs font-bold rounded-lg transition-colors cursor-pointer"
-          >
+          <button onClick={() => fetchTopology()} disabled={loading} className="px-4 py-1.5 bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-xs font-bold rounded-lg transition-colors cursor-pointer">
             {loading ? "Refreshing..." : "Sync Logs"}
           </button>
         </div>
       </header>
 
-      {/* Primary Workspace Grid Split Layout */}
       <div className="flex-1 flex overflow-hidden">
         
-        {/* Left Sidebar: Severity-Ranked Validation Error Panel */}
         <div className="w-80 border-r border-slate-800 bg-slate-900/40 flex flex-col z-10">
           <div className="p-4 border-b border-slate-800 bg-slate-900/60 flex justify-between items-center">
             <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Diagnostic Rule Logs</span>
             {selectedIED && (
-              <button 
-                onClick={() => setSelectedIED(null)}
-                className="text-[10px] bg-slate-800 hover:bg-slate-700 text-amber-400 px-2 py-0.5 border border-slate-700 rounded transition-all cursor-pointer"
-              >
+              <button onClick={() => setSelectedIED(null)} className="text-[10px] bg-slate-800 hover:bg-slate-700 text-amber-400 px-2 py-0.5 border border-slate-700 rounded transition-all cursor-pointer">
                 Reset Filter
               </button>
             )}
@@ -144,37 +128,27 @@ export default function App() {
           </div>
         </div>
 
-        {/* Center Panel Stack: Network Canvas Flow + Code Context Inspector */}
         <div className="flex-1 flex flex-col overflow-hidden">
-          
-          {/* React Flow Upper Frame Viewport Canvas */}
           <div className="flex-1 min-h-[50%] bg-slate-950 relative">
-            <ReactFlow
-              nodes={nodes}
-              edges={edges}
-              onNodeClick={(_, node) => setSelectedIED(node.id)}
-              onPaneClick={() => setSelectedIED(null)}
-              fitView
-            >
+            <ReactFlow nodes={nodes} edges={edges} onNodeClick={(_, node) => setSelectedIED(node.id)} onPaneClick={() => setSelectedIED(null)} fitView>
               <Background color="#334155" gap={24} size={1.5} />
               <Controls className="!bg-slate-900 !border-slate-700 !text-slate-100 !fill-slate-100" />
             </ReactFlow>
           </div>
 
-          {/* Underlay Footer Panel: Interactive SCL Code Viewport Inspector */}
           {activeErrorLine && (
             <div className="h-60 border-t border-slate-800 bg-slate-900/90 font-mono text-xs flex flex-col z-10 shadow-2xl">
               <div className="px-6 py-2 bg-slate-900 border-b border-slate-800/80 flex justify-between items-center shrink-0">
                 <span className="text-xs font-bold uppercase tracking-wider text-slate-400">SCL Schema Live Source Inspector</span>
                 <span className="text-amber-400 font-bold bg-amber-950/60 border border-amber-900/50 px-2 py-0.5 rounded text-[11px]">
-                  Failure Reference Point: Line #{activeErrorLine}
+                  Line #{activeErrorLine}
                 </span>
               </div>
               <div className="flex-1 p-4 overflow-y-auto space-y-1 bg-slate-950/40 text-slate-300">
-                <div className="text-slate-600 flex"><span className="w-12 inline-block text-slate-700 text-right pr-4">{activeErrorLine - 1}</span>  &lt;!-- Substation protection schema parsing data context --&gt;</div>
+                <div className="text-slate-600 flex"><span className="w-12 inline-block text-slate-700 text-right pr-4">{activeErrorLine - 1}</span>  &lt;!-- Substation configuration data frame row --&gt;</div>
                 <div className="bg-amber-950/40 border-l-4 border-amber-500 px-2 py-1 text-amber-200 flex shadow-sm">
                   <span className="w-10 inline-block text-amber-600/70 text-right pr-4 font-bold">{activeErrorLine}</span>
-                  <div className="truncate">&lt;ExtRef iedName="Configuration_Discrepancy_Node" ldInst="Prot" lnClass="PTOC" /&gt;</div>
+                  <div className="truncate">&lt;ExtRef iedName="Verification_Discrepancy_Target" ldInst="Prot" /&gt;</div>
                 </div>
                 <div className="text-slate-600 flex"><span className="w-12 inline-block text-slate-700 text-right pr-4">{activeErrorLine + 1}</span>&lt;/Inputs&gt;</div>
               </div>
@@ -182,7 +156,7 @@ export default function App() {
           )}
         </div>
 
-        {/* Right Sidebar: Device Inspector */}
+        {/* Right Sidebar: Dynamic Stream Level Parameter Inspector */}
         <div className="w-80 border-l border-slate-800 bg-slate-900/60 backdrop-blur-md p-6 flex flex-col justify-between shadow-2xl z-10 overflow-y-auto">
           <div className="space-y-6">
             <h2 className="text-xs font-bold uppercase tracking-widest text-slate-500">Device Inspector</h2>
@@ -197,9 +171,7 @@ export default function App() {
                 <div>
                   <h3 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2 flex items-center justify-between">
                     <span>Published Signals</span>
-                    <span className="bg-sky-950 text-sky-400 text-[10px] px-1.5 py-0.5 rounded border border-sky-900 font-mono">
-                      {outboundEdges.length} Out
-                    </span>
+                    <span className="bg-sky-950 text-sky-400 text-[10px] px-1.5 py-0.5 rounded border border-sky-900 font-mono">{outboundEdges.length} Out</span>
                   </h3>
                   <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
                     {outboundEdges.length === 0 ? (
@@ -207,12 +179,13 @@ export default function App() {
                     ) : (
                       outboundEdges.map(edge => {
                         const isExpanded = expandedSignal === edge.id;
+                        const hasMismatch = edge.network_details?.pub_rev !== edge.network_details?.sub_rev;
                         return (
                           <div 
                             key={edge.id} 
                             onClick={() => setExpandedSignal(isExpanded ? null : edge.id)}
                             className={`p-2.5 bg-slate-950/40 border rounded-xl cursor-pointer transition-all duration-150 ${
-                              isExpanded ? 'border-sky-500 bg-slate-950/90 shadow-lg' : 'border-slate-800 hover:border-slate-700'
+                              isExpanded ? 'border-sky-500 bg-slate-950/90 shadow-lg' : hasMismatch ? 'border-red-900/50 bg-red-950/5 hover:border-red-800' : 'border-slate-800 hover:border-slate-700'
                             }`}
                           >
                             <div className="flex justify-between items-center text-[11px] font-mono">
@@ -222,10 +195,14 @@ export default function App() {
                             <div className="text-slate-500 text-[9px] font-mono mt-0.5">Dest → {edge.target}</div>
                             
                             {isExpanded && (
-                              <div className="mt-3 pt-2.5 border-t border-slate-900 space-y-2 text-[10px] font-mono animate-fadeIn text-slate-300">
+                              <div className="mt-3 pt-2.5 border-t border-slate-900 space-y-2 text-[10px] font-mono text-slate-300">
                                 <div className="flex justify-between border-b border-slate-900/40 pb-1">
-                                  <span className="text-slate-500">Config Revision:</span>
-                                  <span className="text-amber-400 font-bold">{edge.network_details?.config_rev}</span>
+                                  <span className="text-slate-500">Live Pub Revision:</span>
+                                  <span className="text-emerald-400 font-bold">{edge.network_details?.pub_rev}</span>
+                                </div>
+                                <div className="flex justify-between border-b border-slate-900/40 pb-1">
+                                  <span className="text-slate-500">Expected Sub Revision:</span>
+                                  <span className={`font-bold ${hasMismatch ? 'text-rose-400 animate-pulse font-black' : 'text-slate-300'}`}>{edge.network_details?.sub_rev}</span>
                                 </div>
                                 <div className="flex justify-between border-b border-slate-900/40 pb-1">
                                   <span className="text-slate-500">APPID:</span>
@@ -241,9 +218,7 @@ export default function App() {
                                 </div>
                                 <div className="flex flex-col gap-0.5 pt-0.5">
                                   <span className="text-slate-500">Multicast MAC Address:</span>
-                                  <span className="text-[9px] bg-slate-950 p-1 rounded border border-slate-900 text-slate-400 tracking-tighter text-center select-all">
-                                    {edge.network_details?.mac_address}
-                                  </span>
+                                  <span className="text-[9px] bg-slate-950 p-1 rounded border border-slate-900 text-slate-400 text-center select-all">{edge.network_details?.mac_address}</span>
                                 </div>
                               </div>
                             )}
@@ -258,9 +233,7 @@ export default function App() {
                 <div>
                   <h3 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2 flex items-center justify-between">
                     <span>Subscribed Inputs</span>
-                    <span className="bg-emerald-950 text-emerald-400 text-[10px] px-1.5 py-0.5 rounded border border-emerald-900 font-mono">
-                      {inboundEdges.length} In
-                    </span>
+                    <span className="bg-emerald-950 text-emerald-400 text-[10px] px-1.5 py-0.5 rounded border border-emerald-900 font-mono">{inboundEdges.length} In</span>
                   </h3>
                   <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
                     {inboundEdges.length === 0 ? (
@@ -268,12 +241,13 @@ export default function App() {
                     ) : (
                       inboundEdges.map(edge => {
                         const isExpanded = expandedSignal === edge.id;
+                        const hasMismatch = edge.network_details?.pub_rev !== edge.network_details?.sub_rev;
                         return (
                           <div 
                             key={edge.id} 
                             onClick={() => setExpandedSignal(isExpanded ? null : edge.id)}
                             className={`p-2.5 bg-slate-950/40 border rounded-xl cursor-pointer transition-all duration-150 ${
-                              isExpanded ? 'border-emerald-500 bg-slate-950/90 shadow-lg' : 'border-slate-800 hover:border-slate-700'
+                              isExpanded ? 'border-emerald-500 bg-slate-950/90 shadow-lg' : hasMismatch ? 'border-red-900/50 bg-red-950/5 hover:border-red-800' : 'border-slate-800 hover:border-slate-700'
                             }`}
                           >
                             <div className="flex justify-between items-center text-[11px] font-mono">
@@ -283,10 +257,14 @@ export default function App() {
                             <div className="text-slate-500 text-[9px] font-mono mt-0.5">Source ← {edge.source}</div>
                             
                             {isExpanded && (
-                              <div className="mt-3 pt-2.5 border-t border-slate-900 space-y-2 text-[10px] font-mono animate-fadeIn text-slate-300">
+                              <div className="mt-3 pt-2.5 border-t border-slate-900 space-y-2 text-[10px] font-mono text-slate-300">
                                 <div className="flex justify-between border-b border-slate-900/40 pb-1">
-                                  <span className="text-slate-500">Config Revision:</span>
-                                  <span className="text-amber-400 font-bold">{edge.network_details?.config_rev}</span>
+                                  <span className="text-slate-500">Live Pub Revision:</span>
+                                  <span className="text-emerald-400 font-bold">{edge.network_details?.pub_rev}</span>
+                                </div>
+                                <div className="flex justify-between border-b border-slate-900/40 pb-1">
+                                  <span className="text-slate-500">Expected Sub Revision:</span>
+                                  <span className={`font-bold ${hasMismatch ? 'text-rose-400 animate-pulse font-black' : 'text-slate-300'}`}>{edge.network_details?.sub_rev}</span>
                                 </div>
                                 <div className="flex justify-between border-b border-slate-900/40 pb-1">
                                   <span className="text-slate-500">APPID:</span>
@@ -302,9 +280,7 @@ export default function App() {
                                 </div>
                                 <div className="flex flex-col gap-0.5 pt-0.5">
                                   <span className="text-slate-500">Source MAC Target:</span>
-                                  <span className="text-[9px] bg-slate-950 p-1 rounded border border-slate-900 text-slate-400 tracking-tighter text-center select-all">
-                                    {edge.network_details?.mac_address}
-                                  </span>
+                                  <span className="text-[9px] bg-slate-950 p-1 rounded border border-slate-900 text-slate-400 text-center select-all">{edge.network_details?.mac_address}</span>
                                 </div>
                               </div>
                             )}

@@ -48,7 +48,7 @@ async def upload_scl_file(file: UploadFile = File(...)):
 def get_graph_data():
     """
     Phase 2/3 Canvas Integration Route.
-    Attaches explicitly read network parameters to individual GOOSE links without fallbacks.
+    Assembles graph elements, matching live data from individual vendor documents.
     """
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -59,89 +59,75 @@ def get_graph_data():
     nodes_payload = [dict(ied) for ied in ieds]
     edges_payload = []
     
+    # Pre-parse and map file trees for raw property checks
+    files = [f for f in os.listdir(UPLOAD_DIR) if f.endswith(('.scd', '.xml', '.cid', '.icd'))]
+    file_xml_caches = {}
+    
+    for f in files:
+        f_path = os.path.join(UPLOAD_DIR, f)
+        try:
+            parser = etree.XMLParser(remove_blank_text=True)
+            tree = etree.parse(f_path, parser=parser)
+            for elem in tree.getiterator():
+                if not (isinstance(elem, etree._Comment) or isinstance(elem, etree._ProcessingInstruction)):
+                    elem.tag = etree.QName(elem).localname
+            file_xml_caches[f] = tree.getroot()
+        except Exception:
+            pass
+
     for link in links:
         link_dict = dict(link)
         cb_name = link_dict["app_id"]
         pub_ied = link_dict["publisher"]
+        sub_ied = link_dict["subscriber"]
         
-        # Pull baseline attributes extracted during parser engine loops
-        errors = cursor.execute(
-            "SELECT rule_type, message FROM validation_errors WHERE ied_name = ? AND message LIKE ?",
-            (pub_ied, f"%{cb_name}%")
-        ).fetchall()
-        
-        # Absolute structural baseline: default parameters read as TBC unless explicitly resolved
+        # Base values default strictly to TBC
         vlan_id = "TBC"
         vlan_priority = "TBC"
         mac_address = "TBC"
         appid = "TBC"
-        config_rev = "TBC"
+        pub_rev = "TBC"
+        sub_rev = "TBC"
         
-        # Attempt to read data configuration parameters out of validation logs if captured
-        for err in errors:
-            msg = err["message"]
-            if err["rule_type"] == "MAC_OUT_OF_RANGE":
-                mac_address = msg.split("'")[1] if "'" in msg else mac_address
-            elif err["rule_type"] == "VLAN_OUT_OF_RANGE":
-                vlan_id = msg.split("'")[1] if "'" in msg else vlan_id
-            elif err["rule_type"] == "VLAN_PRIORITY_LOW":
-                vlan_priority = msg.split("'")[1] if "'" in msg else vlan_priority
-            elif err["rule_type"] == "APPID_OUT_OF_BOUNDS":
-                appid = msg.split("'")[1] if "'" in msg else appid
-            elif err["rule_type"] == "CONF_REV_MISMATCH":
-                config_rev = msg.split("'")[3] if len(msg.split("'")) >= 4 else config_rev
+        # DYNAMIC DECOUPLED LOOKUP: Loop across independent vendor files
+        for root in file_xml_caches.values():
+            # Extract publisher configuration details natively
+            for gse_cb in root.findall(f".//GSEControl[@name='{cb_name}']"):
+                p_ied = gse_cb.getparent()
+                while p_ied is not None and p_ied.tag != "IED":
+                    p_ied = p_ied.getparent()
+                if p_ied is not None and p_ied.get("name") == pub_ied:
+                    pub_rev = gse_cb.get("confRev", "TBC")
+            
+            for gse in root.findall(f".//ConnectedAP/GSE[@cbName='{cb_name}']"):
+                cap = gse.getparent()
+                if cap.get("iedName") == pub_ied:
+                    mac_elem = gse.find(".//P[@type='MAC-Address']")
+                    vlan_elem = gse.find(".//P[@type='VLAN-ID']")
+                    pri_elem = gse.find(".//P[@type='VLAN-PRIORITY']")
+                    appid_elem = gse.find(".//P[@type='APPID']")
+                    
+                    if mac_elem is not None: mac_address = mac_elem.text
+                    if vlan_elem is not None: vlan_id = vlan_elem.text
+                    if pri_elem is not None: vlan_priority = pri_elem.text
+                    if appid_elem is not None: appid = appid_elem.text
 
-        # If no error parameter was captured, inspect structural XML index trackers for healthy values
-        # This scans the underlying files dynamically if they are clear of range violation errors
-        if vlan_id == "TBC" or vlan_priority == "TBC" or mac_address == "TBC" or appid == "TBC" or config_rev == "TBC":
-            files = [f for f in os.listdir(UPLOAD_DIR) if f.endswith(('.scd', '.xml', '.cid', '.icd'))]
-            for f in files:
-                f_path = os.path.join(UPLOAD_DIR, f)
-                try:
-                    parser = etree.XMLParser(remove_blank_text=True)
-                    tree = etree.parse(f_path, parser=parser)
-                    
-                    # Clean namespaces locally for robust scanning loops
-                    for elem in tree.getiterator():
-                        if not (isinstance(elem, etree._Comment) or isinstance(elem, etree._ProcessingInstruction)):
-                            elem.tag = etree.QName(elem).localname
-                    root = tree.getroot()
-                    
-                    # Search for matching publisher control block definitions
-                    for gse_cb in root.findall(f".//GSEControl[@name='{cb_name}']"):
-                        parent_ied = gse_cb.getparent()
-                        while parent_ied is not None and parent_ied.tag != "IED":
-                            parent_ied = parent_ied.getparent()
-                        
-                        if parent_ied is not None and parent_ied.get("name") == pub_ied:
-                            if config_rev == "TBC":
-                                config_rev = gse_cb.get("confRev", "TBC")
-                    
-                    # Search for connected communications configurations blocks
-                    for gse in root.findall(f".//ConnectedAP/GSE[@cbName='{cb_name}']"):
-                        cap = gse.getparent()
-                        if cap.get("iedName") == pub_ied:
-                            if mac_address == "TBC":
-                                mac_elem = gse.find(".//P[@type='MAC-Address']")
-                                if mac_elem is not None: mac_address = mac_elem.text
-                            if vlan_id == "TBC":
-                                vlan_elem = gse.find(".//P[@type='VLAN-ID']")
-                                if vlan_elem is not None: vlan_id = vlan_elem.text
-                            if vlan_priority == "TBC":
-                                pri_elem = gse.find(".//P[@type='VLAN-PRIORITY']")
-                                if pri_elem is not None: vlan_priority = pri_elem.text
-                            if appid == "TBC":
-                                appid_elem = gse.find(".//P[@type='APPID']")
-                                if appid_elem is not None: appid = appid_elem.text
-                except Exception:
-                    pass
+            # Extract subscriber expected versions natively
+            for extref in root.findall(".//ExtRef"):
+                if extref.get("iedName") == pub_ied and extref.get("srcCBName") == cb_name:
+                    s_ied = extref.getparent()
+                    while s_ied is not None and s_ied.tag != "IED":
+                        s_ied = s_ied.getparent()
+                    if s_ied is not None and s_ied.get("name") == sub_ied:
+                        sub_rev = extref.get("srcSubVersion", "TBC")
 
         link_dict["network_details"] = {
             "vlan_id": vlan_id if vlan_id else "TBC",
             "vlan_priority": vlan_priority if vlan_priority else "TBC",
             "mac_address": mac_address if mac_address else "TBC",
             "appid": appid if appid else "TBC",
-            "config_rev": config_rev if config_rev else "TBC"
+            "pub_rev": pub_rev if pub_rev else "TBC",
+            "sub_rev": sub_rev if sub_rev else "TBC"
         }
         edges_payload.append(link_dict)
         
