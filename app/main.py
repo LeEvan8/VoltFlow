@@ -3,11 +3,10 @@ import shutil
 import sqlite3
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from lxml import etree
 from app.database import init_db, get_db_connection
 from app.parser import parse_and_validate_scl
 
-app = FastAPI(title="VoltFlow Unified Multi-Vendor Engine")
+app = FastAPI(title="VoltFlow Production Matrix Engine")
 
 app.add_middleware(
     CORSMiddleware,
@@ -26,30 +25,19 @@ def startup():
 
 @app.post("/api/v1/upload")
 async def upload_scl_file(file: UploadFile = File(...)):
-    allowed_extensions = ('.scd', '.cid', '.icd', '.xml')
-    if not file.filename.lower().endswith(allowed_extensions):
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Unsupported file format. System only accepts valid SCL profiles: {', '.join(allowed_extensions)}"
-        )
-
+    if not file.filename.lower().endswith(('.scd', '.cid', '.iid', '.icd', '.xml')):
+        raise HTTPException(status_code=400, detail="Unsupported extension format.")
     file_path = os.path.join(UPLOAD_DIR, file.filename)
     with open(file_path, "wb") as buffer:
         buffer.write(await file.read())
-        
     try:
         parse_and_validate_scl(file_path)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Engine analysis fault: {str(e)}")
-        
-    return {"status": "SUCCESS", "stored_file": file.filename}
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"status": "SUCCESS"}
 
 @app.get("/api/v1/graph-data")
 def get_graph_data():
-    """
-    Phase 2/3 Canvas Integration Route.
-    Assembles graph elements, matching live data from individual vendor documents.
-    """
     conn = get_db_connection()
     cursor = conn.cursor()
     
@@ -59,78 +47,133 @@ def get_graph_data():
     nodes_payload = [dict(ied) for ied in ieds]
     edges_payload = []
     
-    # Pre-parse and map file trees for raw property checks
-    files = [f for f in os.listdir(UPLOAD_DIR) if f.endswith(('.scd', '.xml', '.cid', '.icd'))]
-    file_xml_caches = {}
+    publishers_registry = []
+    subscribers_registry = []
     
-    for f in files:
-        f_path = os.path.join(UPLOAD_DIR, f)
-        try:
-            parser = etree.XMLParser(remove_blank_text=True)
-            tree = etree.parse(f_path, parser=parser)
-            for elem in tree.getiterator():
-                if not (isinstance(elem, etree._Comment) or isinstance(elem, etree._ProcessingInstruction)):
-                    elem.tag = etree.QName(elem).localname
-            file_xml_caches[f] = tree.getroot()
-        except Exception:
-            pass
-
     for link in links:
         link_dict = dict(link)
-        cb_name = link_dict["app_id"]
-        pub_ied = link_dict["publisher"]
-        sub_ied = link_dict["subscriber"]
+        parts = link_dict["xpath"].split("||")
+        filename = parts[0]
+        mode = parts[1]
         
-        # Base values default strictly to TBC
-        vlan_id = "TBC"
-        vlan_priority = "TBC"
-        mac_address = "TBC"
-        appid = "TBC"
-        pub_rev = "TBC"
-        sub_rev = "TBC"
-        
-        # DYNAMIC DECOUPLED LOOKUP: Loop across independent vendor files
-        for root in file_xml_caches.values():
-            # Extract publisher configuration details natively
-            for gse_cb in root.findall(f".//GSEControl[@name='{cb_name}']"):
-                p_ied = gse_cb.getparent()
-                while p_ied is not None and p_ied.tag != "IED":
-                    p_ied = p_ied.getparent()
-                if p_ied is not None and p_ied.get("name") == pub_ied:
-                    pub_rev = gse_cb.get("confRev", "TBC")
-            
-            for gse in root.findall(f".//ConnectedAP/GSE[@cbName='{cb_name}']"):
-                cap = gse.getparent()
-                if cap.get("iedName") == pub_ied:
-                    mac_elem = gse.find(".//P[@type='MAC-Address']")
-                    vlan_elem = gse.find(".//P[@type='VLAN-ID']")
-                    pri_elem = gse.find(".//P[@type='VLAN-PRIORITY']")
-                    appid_elem = gse.find(".//P[@type='APPID']")
-                    
-                    if mac_elem is not None: mac_address = mac_elem.text
-                    if vlan_elem is not None: vlan_id = vlan_elem.text
-                    if pri_elem is not None: vlan_priority = pri_elem.text
-                    if appid_elem is not None: appid = appid_elem.text
+        if mode == "PUB":
+            publishers_registry.append({
+                "ied": link_dict["publisher"],
+                "dataset": parts[2],
+                "cb_name": link_dict["app_id"],
+                "filename": filename,
+                "conf_rev": parts[3],
+                "cb_appid": parts[4],
+                "net_appid": parts[5],
+                "vlan_id": parts[6],
+                "vlan_priority": parts[7],
+                "mac_address": parts[8],
+                "min_time": parts[9] if len(parts) > 9 else "—",
+                "max_time": parts[10] if len(parts) > 10 else "—"
+            })
+        elif mode == "SUBSCRIBE":
+            subscribers_registry.append({
+                "pub_ied": link_dict["publisher"],
+                "sub_ied": link_dict["subscriber"],
+                "cb_name": link_dict["app_id"],
+                "filename": filename,
+                "expected_rev": parts[2],
+                "expected_appid": parts[3],
+                "expected_vlan": parts[4],
+                "expected_pri": parts[5],
+                "expected_mac": parts[6]
+            })
 
-            # Extract subscriber expected versions natively
-            for extref in root.findall(".//ExtRef"):
-                if extref.get("iedName") == pub_ied and extref.get("srcCBName") == cb_name:
-                    s_ied = extref.getparent()
-                    while s_ied is not None and s_ied.tag != "IED":
-                        s_ied = s_ied.getparent()
-                    if s_ied is not None and s_ied.get("name") == sub_ied:
-                        sub_rev = extref.get("srcSubVersion", "TBC")
+    cursor.execute("DELETE FROM validation_errors WHERE rule_type IN ('CONF_REV_MISMATCH', 'PARAMETER_SPACE_DRIFT')")
+    
+    edge_counter = 1
+    parallel_track_matrix = {}
 
-        link_dict["network_details"] = {
-            "vlan_id": vlan_id if vlan_id else "TBC",
-            "vlan_priority": vlan_priority if vlan_priority else "TBC",
-            "mac_address": mac_address if mac_address else "TBC",
-            "appid": appid if appid else "TBC",
-            "pub_rev": pub_rev if pub_rev else "TBC",
-            "sub_rev": sub_rev if sub_rev else "TBC"
-        }
-        edges_payload.append(link_dict)
+    for pub in publishers_registry:
+        has_linked_receiver = False
         
+        for sub in subscribers_registry:
+            if pub["ied"] == sub["pub_ied"] and pub["cb_name"] == sub["cb_name"]:
+                has_linked_receiver = True
+                
+                is_rev_match = (str(pub["conf_rev"]).strip() == str(sub["expected_rev"]).strip())
+                is_appid_match = (str(pub["cb_appid"]).strip() == str(sub["expected_appid"]).strip()) if sub["expected_appid"] else True
+                is_vlan_match = (str(pub["vlan_id"]).strip() == str(sub["expected_vlan"]).strip()) if sub["expected_vlan"] else True
+                is_mac_match = (str(pub["mac_address"]).strip() == str(sub["expected_mac"]).strip()) if sub["expected_mac"] else True
+
+                if is_rev_match and is_vlan_match and is_mac_match and is_appid_match:
+                    color_state = "GREEN"
+                else:
+                    color_state = "YELLOW"
+
+                if not is_rev_match:
+                    cursor.execute(
+                        "INSERT INTO validation_errors (ied_name, severity, rule_type, message, xpath) VALUES (?,?,?,?,?)",
+                        (sub["sub_ied"], "ERROR", "CONF_REV_MISMATCH", f"Revision Mismatch on '{pub['cb_name']}': Publisher has '{pub['conf_rev']}', Subscriber expected '{sub['expected_rev']}'.", f"{sub['filename']}||ExtRef")
+                    )
+
+                wire_key = f"{pub['ied']}->{sub['sub_ied']}"
+                current_idx = parallel_track_matrix.get(wire_key, 0)
+                parallel_track_matrix[wire_key] = current_idx + 1
+
+                edges_payload.append({
+                    "id": edge_counter,
+                    "publisher": pub["ied"],
+                    "subscriber": sub["sub_ied"],
+                    "app_id": pub["cb_name"],
+                    "color_state": color_state,
+                    "edge_index": current_idx,
+                    "network_details": {
+                        "dataset": pub["dataset"],
+                        "cb_name": pub["cb_name"],
+                        "appid": pub["cb_appid"],
+                        "mac_address": pub["mac_address"],
+                        "vlan_id": pub["vlan_id"],
+                        "vlan_priority": pub["vlan_priority"],
+                        "pub_rev": pub["conf_rev"],
+                        "min_time": pub["min_time"],
+                        "max_time": pub["max_time"],
+                        "sub_rev": sub["expected_rev"] if sub["expected_rev"] else "—",
+                        "sub_appid": sub["expected_appid"] if sub["expected_appid"] else "—",
+                        "sub_vlan": sub["expected_vlan"] if sub["expected_vlan"] else "—",
+                        "sub_pri": sub["expected_pri"] if sub["expected_pri"] else "—",
+                        "sub_mac": sub["expected_mac"] if sub["expected_mac"] else "—"
+                    }
+                })
+                edge_counter += 1
+
+        if not has_linked_receiver:
+            wire_key = f"{pub['ied']}->{pub['ied']}"
+            current_idx = parallel_track_matrix.get(wire_key, 0)
+            parallel_track_matrix[wire_key] = current_idx + 1
+
+            edges_payload.append({
+                "id": edge_counter,
+                "publisher": pub["ied"],
+                "subscriber": pub["ied"],
+                "app_id": pub["cb_name"],
+                "color_state": "RED",
+                "edge_index": current_idx,
+                "network_details": {
+                    "dataset": pub["dataset"],
+                    "cb_name": pub["cb_name"],
+                    "appid": pub["cb_appid"],
+                    "mac_address": pub["mac_address"],
+                    "vlan_id": pub["vlan_id"],
+                    "vlan_priority": pub["vlan_priority"],
+                    "pub_rev": pub["conf_rev"],
+                    "min_time": pub["min_time"],
+                    "max_time": pub["max_time"],
+                    "sub_rev": "—",
+                    "sub_appid": "—",
+                    "sub_vlan": "—",
+                    "sub_pri": "—",
+                    "sub_mac": "—"
+                }
+            })
+            edge_counter += 1
+
+    conn.commit()
     conn.close()
     return {"nodes": nodes_payload, "edges": edges_payload}
 
@@ -138,28 +181,9 @@ def get_graph_data():
 def get_errors():
     conn = get_db_connection()
     cursor = conn.cursor()
-    errors = cursor.execute("SELECT * FROM validation_errors ORDER BY severity ASC").fetchall()
+    errors = cursor.execute("SELECT * FROM validation_errors").fetchall()
     conn.close()
     return [dict(err) for err in errors]
-
-@app.get("/api/v1/line-index")
-def get_line_number(xpath: str, filename: str = None):
-    if "||" in xpath:
-        filename, xpath = xpath.split("||", 1)
-
-    file_path = os.path.join(UPLOAD_DIR, filename)
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail=f"Target file record '{filename}' not found on disk.")
-
-    try:
-        parser = etree.XMLParser(sourceline_order="as-read")
-        tree = etree.parse(file_path, parser=parser)
-        element = tree.xpath(xpath)
-        if element and len(element) > 0:
-            return {"xpath": xpath, "line_number": element[0].sourceline}
-        return {"xpath": xpath, "line_number": 1}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"XML live code stream indexing failed: {str(e)}")
 
 @app.delete("/api/v1/reset")
 def reset_workspace():
@@ -170,8 +194,6 @@ def reset_workspace():
     cursor.execute("DELETE FROM validation_errors")
     conn.commit()
     conn.close()
-    
-    if os.path.exists(UPLOAD_DIR):
-        shutil.rmtree(UPLOAD_DIR)
+    if os.path.exists(UPLOAD_DIR): shutil.rmtree(UPLOAD_DIR)
     os.makedirs(UPLOAD_DIR, exist_ok=True)
-    return {"status": "CLEARED", "message": "Substation workspace reset successfully."}
+    return {"status": "CLEARED"}

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <SCL xmlns:esel="http://www.selinc.com/2006/61850" version="2007" revision="B" xmlns="http://www.iec.ch/61850/2003/SCL">
-  <Header id="SEL 61850 Config" version="11" revision="1.0" toolID="AcSELerator Architect 3.1.0.76">
+  <Header id="SEL 61850 Config" version="15" revision="1.0" toolID="AcSELerator Architect 3.1.0.76">
     <History>
-      <Hitem version="11" revision="1.0" when="07/03/2026 18:15:09" who="DESKTOP-V2BVQL0\User" what="IED exported from Project SEL 61850 Config" />
+      <Hitem version="15" revision="1.0" when="07/17/2026 14:04:09" who="DESKTOP-V2BVQL0\User" what="IED exported from Project SEL 61850 Config" />
     </History>
   </Header>
   <Communication>
@@ -21,7 +21,7 @@
             <P type="MAC-Address">01-0C-CD-01-00-10</P>
             <P type="APPID">0003</P>
             <P type="VLAN-PRIORITY">4</P>
-            <P type="VLAN-ID">000</P>
+            <P type="VLAN-ID">003</P>
           </Address>
           <MinTime unit="s" multiplier="m">4</MinTime>
           <MaxTime unit="s" multiplier="m">1000</MaxTime>
@@ -36,7 +36,7 @@
       <esel:ClassFileVersion>006</esel:ClassFileVersion>
       <esel:ClassFileDescription default="false">SEL751 Edition 2, R301 or higher</esel:ClassFileDescription>
       <esel:IcdFilePath>C:\ProgramData\SEL\AcSELerator\Architect\ICD\0751 006 R301.ICD</esel:IcdFilePath>
-      <esel:CidSentTime>07/03/2026 18:12:23</esel:CidSentTime>
+      <esel:CidSentTime>07/17/2026 14:02:44</esel:CidSentTime>
     </Private>
     <Private type="SEL_IedResources">
       <esel:InDigitals>
@@ -67,20 +67,7 @@
       <esel:Originator category="7" allowed="1" />
       <esel:Originator category="8" allowed="1" />
     </Private>
-    <Private type="SEL_GooseSubscription">
-      <!-- This section is overwritten by Architect and regenerated from information in the <Inputs> elements.
-           Changes to this section will not be preserved.  Edits must be made to the <Inputs> elements directly. -->
-      <esel:GooseSubscription iedName="E01F87T" ldInst="UD1" cbName="Control_DataSet" datSet="DataSet" appId="E01F87T/UD1/LLN0/Control_DataSet" goCbRef="E01F87TUD1/LLN0$GO$Control_DataSet" pubRxStatus="" confRev="20001" mAddr="01-0C-CD-01-00-00" APPID="0001" VLAN-ID="000" VLAN-PRIORITY="4" datSetRef="E01F87TUD1/LLN0$DataSet">
-        <esel:GooseRxEntry tdlString="(VB001$r0)Bool" />
-        <esel:GooseRxEntry tdlString="(r0$o0x1807)BVstring13" />
-        <esel:GooseRxEntry tdlString="(VB002$r1)Bool" />
-        <esel:GooseRxEntry tdlString="(r1$o0x1807)BVstring13" />
-      </esel:GooseSubscription>
-    </Private>
-    <Private type="SEL_Quality_Processing">
-      <esel:QualityProcessing address="VB001" value="q=0x1807" />
-      <esel:QualityProcessing address="VB002" value="q=0x1807" />
-    </Private>
+    <Private type="SEL_GooseSubscription" />
     <Services nameLength="64">
       <DynAssociation max="7" />
       <SettingGroups />
@@ -118,8 +105,8 @@
               </DAI>
             </DOI>
             <Inputs>
-              <ExtRef iedName="E01F87T" ldInst="UD1" prefix="" lnClass="USER" lnInst="1" doName="FirstGoose" daName="stVal" intAddr="VB001" serviceType="GOOSE" srcLDInst="UD1" srcLNClass="LLN0" srcCBName="Control_DataSet" />
-              <ExtRef iedName="E01F87T" ldInst="PTS1_5051OC3phase1" prefix="ID_" lnClass="PTOC" lnInst="1" doName="Op" daName="general" intAddr="VB002" serviceType="GOOSE" srcLDInst="UD1" srcLNClass="LLN0" srcCBName="Control_DataSet" />
+              <ExtRef intAddr="VB001" serviceType="GOOSE" />
+              <ExtRef intAddr="VB002" serviceType="GOOSE" />
               <ExtRef intAddr="VB003" serviceType="GOOSE" />
               <ExtRef intAddr="VB004" serviceType="GOOSE" />
               <ExtRef intAddr="VB005" serviceType="GOOSE" />
@@ -375,12 +362,12 @@
               <ExtRef intAddr="RA127" serviceType="GOOSE" />
               <ExtRef intAddr="RA128" serviceType="GOOSE" />
             </Inputs>
-            <GSEControl name="New" datSet="NewDataset" confRev="666" appID="SEL_751">
+            <GSEControl name="New" datSet="NewDataset" confRev="132" appID="SEL_751">
               <Private type="SEL_GOOSETXAddress">
                 <esel:Address>
                   <esel:P type="MAC-Address">01-0C-CD-01-00-10</esel:P>
                   <esel:P type="APPID">0003</esel:P>
-                  <esel:P type="VLAN-ID">000</esel:P>
+                  <esel:P type="VLAN-ID">003</esel:P>
                   <esel:P type="VLAN-PRIORITY">4</esel:P>
                 </esel:Address>
               </Private>
