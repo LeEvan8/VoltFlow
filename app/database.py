@@ -1,19 +1,10 @@
 import sqlite3
-import os
-
-DB_PATH = "voltflow.db"
-
-def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 def init_db():
-    """Initializes tables mapped directly to Phase 2/3 requirements."""
-    conn = get_db_connection()
+    conn = sqlite3.connect("voltflow.db")
     cursor = conn.cursor()
     
-    # 1. IED Inventory Table (Drives React Flow Nodes in Phase 2)
+    # Track physical device instances
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS ieds (
             name TEXT PRIMARY KEY,
@@ -22,19 +13,18 @@ def init_db():
         )
     """)
     
-    # 2. GOOSE Edge Table (Drives React Flow Animated Wires in Phase 2)
+    # Store directional structural link parameters globally
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS goose_links (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             publisher TEXT,
             subscriber TEXT,
             app_id TEXT,
-            xpath TEXT,
-            FOREIGN KEY(subscriber) REFERENCES ieds(name)
+            xpath TEXT
         )
     """)
     
-    # 3. Validation Errors Table (Drives Phase 3 Sidebar & Line Jump)
+    # Store calculated compliance anomalies
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS validation_errors (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,10 +32,14 @@ def init_db():
             severity TEXT,
             rule_type TEXT,
             message TEXT,
-            xpath TEXT,
-            FOREIGN KEY(ied_name) REFERENCES ieds(name)
+            xpath TEXT
         )
     """)
     
     conn.commit()
     conn.close()
+
+def get_db_connection():
+    conn = sqlite3.connect("voltflow.db")
+    conn.row_factory = sqlite3.Row
+    return conn

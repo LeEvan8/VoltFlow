@@ -14,9 +14,11 @@ export interface GOOSEControlDetails {
   type: string;
   selected?: boolean;
   data: {
-    color_state: 'GREEN' | 'YELLOW' | 'RED';
+    color_state: 'GREEN' | 'YELLOW' | 'RED' | 'AMBER';
     label: string;
     edge_index: number;
+    is_self_loop: boolean;
+    is_orphan_stub: boolean;
     network_details: {
       dataset: string;
       cb_name: string;
@@ -42,6 +44,7 @@ export interface ValidationError {
   severity: string;
   rule_type: string;
   message: string;
+  xpath: string;
 }
 
 interface VoltFlowUIState {
@@ -69,14 +72,14 @@ export const useVoltFlowStore = create<VoltFlowUIState>((set) => ({
     set({ loading: true });
     try {
       const res = await fetch('http://localhost:8000/api/v1/graph-data');
-      if (!res.ok) throw new Error("Backend offline");
+      if (!res.ok) throw new Error("Backend infrastructure offline");
       const data = await res.json();
 
       const arrangedNodes = data.nodes.map((node: any, idx: number) => ({
         id: node.name,
         type: 'default',
         data: { label: node.name, file: node.subnetwork },
-        position: { x: 150 + (idx % 2) * 480, y: 150 + Math.floor(idx / 2) * 260 }
+        position: { x: 220 + (idx % 2) * 450, y: 180 + Math.floor(idx / 2) * 260 }
       }));
 
       const mappedWires = data.edges.map((edge: any) => ({
@@ -88,6 +91,8 @@ export const useVoltFlowStore = create<VoltFlowUIState>((set) => ({
           color_state: edge.color_state,
           label: edge.app_id,
           edge_index: edge.edge_index,
+          is_self_loop: edge.is_self_loop,
+          is_orphan_stub: edge.is_orphan_stub,
           network_details: edge.network_details
         }
       }));
@@ -97,7 +102,7 @@ export const useVoltFlowStore = create<VoltFlowUIState>((set) => ({
       
       set({ nodes: arrangedNodes, edges: mappedWires, errors: errorsData });
     } catch (err) {
-      console.error(err);
+      console.error("[Workspace State Error]", err);
     } finally {
       set({ loading: false });
     }
