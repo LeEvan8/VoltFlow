@@ -3,6 +3,17 @@ import os
 from lxml import etree
 from app.database import get_db_connection
 
+# =========================================================================
+# TEMPORARY DEBUG SECTION (Easily removable for production)
+# =========================================================================
+def print_parser_debug_info(mode: str, data: dict):
+    """Temporary diagnostic print function for terminal troubleshooting."""
+    print(f"\n================ [PARSER DEBUG: {mode}] ================")
+    for key, val in data.items():
+        print(f"  {key:<15} : {val}")
+    print("========================================================\n")
+# =========================================================================
+
 def strip_namespaces(root):
     """Cleanly isolates elements from heavy multi-vendor XML namespace bloat."""
     for elem in root.iter():
@@ -30,23 +41,15 @@ def parse_and_validate_scl(file_path: str):
         # -------------------------------------------------------------------------
         # THE SURGICAL OVERWRITE ENGINE (IED-CENTRIC INGESTION)
         # -------------------------------------------------------------------------
-        # 1. Catalog all relays present in this specific newly uploaded file
         active_ieds_in_file = [ied.get("name") for ied in root.findall(".//IED") if ied.get("name")]
         
-        # 2. Target and destroy only the footprints of these specific relays
         for ied_name in active_ieds_in_file:
-            # Drop the physical device footprint
             cursor.execute("DELETE FROM ieds WHERE name = ?", (ied_name,))
-            # Drop outbound GOOSE control blocks published by this relay
             cursor.execute("DELETE FROM goose_links WHERE publisher = ? AND subscriber = 'OUTBOUND'", (ied_name,))
-            # Drop inbound ExtRef subscriptions mapped by this relay
             cursor.execute("DELETE FROM goose_links WHERE subscriber = ?", (ied_name,))
-            
-            # NOTE: Any relay NOT in this file (e.g., the previously uploaded Siemens IED)
-            # remains entirely untouched in the database, allowing cross-file merging!
 
         # -------------------------------------------------------------------------
-        # PASS 1: EXTRACT MASTER PUBLISHED SIGNALS 
+        # PASS 1: EXTRACT MASTER PUBLISHED SIGNALS (WITH ldInst DIFFERENTIATION)
         # -------------------------------------------------------------------------
         for ied_elem in root.findall(".//IED"):
             ied_name = ied_elem.get("name")
@@ -57,45 +60,69 @@ def parse_and_validate_scl(file_path: str):
                 (ied_name, ied_elem.get("type", "Relay"), filename)
             )
             
-            for gse_cb in ied_elem.findall(".//GSEControl"):
-                cb_name = gse_cb.get("name", "")
-                dataset = gse_cb.get("datSet", "")
-                conf_rev = gse_cb.get("confRev", "")
-                cb_app_id = gse_cb.get("appID", "") 
+            # Iterate through Logical Devices to capture ldInst (e.g., CB1 vs CB2)
+            for ldevice_elem in ied_elem.findall(".//LDevice"):
+                ld_inst = ldevice_elem.get("inst", "")
                 
-                vlan_id, vlan_priority, mac_address, network_appid, min_time, max_time = "", "", "", "", "", ""
-                gse_network_element = root.find(f".//ConnectedAP[@iedName='{ied_name}']//GSE[@cbName='{cb_name}']")
-                
-                if gse_network_element is not None:
-                    net_addr = gse_network_element.find(".//Address")
-                    if net_addr is not None:
-                        for p in net_addr.findall("./P"):
-                            p_type = p.get("type")
-                            if not p.text: continue
-                            if p_type == "MAC-Address": mac_address = p.text.strip().replace("-", ":").upper()
-                            elif p_type == "VLAN-ID": vlan_id = p.text.strip()
-                            elif p_type == "VLAN-PRIORITY": vlan_priority = p.text.strip()
-                            elif p_type == "APPID": network_appid = p.text.strip()
+                for gse_cb in ldevice_elem.findall(".//GSEControl"):
+                    cb_name = gse_cb.get("name", "")
+                    dataset = gse_cb.get("datSet", "")
+                    conf_rev = gse_cb.get("confRev", "")
+                    cb_app_id = gse_cb.get("appID", "") 
                     
-                    min_elem = gse_network_element.find(".//MinTime")
-                    if min_elem is not None and min_elem.text: min_time = min_elem.text.strip()
-                    max_elem = gse_network_element.find(".//MaxTime")
-                    if max_elem is not None and max_elem.text: max_time = max_elem.text.strip()
+                    vlan_id, vlan_priority, mac_address, network_appid, min_time, max_time = "", "", "", "", "", ""
+                    
+                    # Target the exact GSE element matching both ldInst and cbName
+                    gse_network_element = root.find(f".//ConnectedAP[@iedName='{ied_name}']//GSE[@ldInst='{ld_inst}'][@cbName='{cb_name}']")
+                    
+                    if gse_network_element is not None:
+                        net_addr = gse_network_element.find(".//Address")
+                        if net_addr is not None:
+                            for p in net_addr.findall("./P"):
+                                p_type = p.get("type")
+                                if not p.text: continue
+                                if p_type == "MAC-Address": mac_address = p.text.strip().replace("-", ":").upper()
+                                elif p_type == "VLAN-ID": vlan_id = p.text.strip()
+                                elif p_type == "VLAN-PRIORITY": vlan_priority = p.text.strip()
+                                elif p_type == "APPID": network_appid = p.text.strip()
+                        
+                        min_elem = gse_network_element.find(".//MinTime")
+                        if min_elem is not None and min_elem.text: min_time = min_elem.text.strip()
+                        max_elem = gse_network_element.find(".//MaxTime")
+                        if max_elem is not None and max_elem.text: max_time = max_elem.text.strip()
 
-                final_appid = network_appid if network_appid else cb_app_id
-                payload = f"PUB||{dataset}||{conf_rev}||{final_appid}||{vlan_id}||{vlan_priority}||{mac_address}||{min_time}||{max_time}"
-                cursor.execute(
-                    "INSERT INTO goose_links (publisher, subscriber, app_id, xpath) VALUES (?, ?, ?, ?)",
-                    (ied_name, "OUTBOUND", cb_name, f"{filename}||{payload}")
-                )
+                    final_appid = network_appid if network_appid else cb_app_id
+                    
+                    # CALLING TEMPORARY DEBUG FOR PUBLISHER
+                    print_parser_debug_info("PUBLISHER (PUB)", {
+                        "filename": filename,
+                        "ied_name": ied_name,
+                        "ld_inst": ld_inst,
+                        "cb_name": cb_name,
+                        "dataset": dataset,
+                        "conf_rev": conf_rev,
+                        "final_appid": final_appid,
+                        "mac_address": mac_address
+                    })
+
+                    # Store ld_inst at the end of the payload for downstream mapping
+                    payload = f"PUB||{dataset}||{conf_rev}||{final_appid}||{vlan_id}||{vlan_priority}||{mac_address}||{min_time}||{max_time}||{ld_inst}"
+                    cursor.execute(
+                        "INSERT INTO goose_links (publisher, subscriber, app_id, xpath) VALUES (?, ?, ?, ?)",
+                        (ied_name, "OUTBOUND", cb_name, f"{filename}||{payload}")
+                    )
 
         # -------------------------------------------------------------------------
-        # PASS 2: EXTRACT STANDARDIZED SUBSCRIPTION WIRES
+        # PASS 2: EXTRACT STANDARDIZED SUBSCRIPTION WIRES (WITH srcLDInst SCOPING)
         # -------------------------------------------------------------------------
+        processed_subscriptions = set()
+
         for extref in root.findall(".//ExtRef"):
             pub_ied_name = extref.get("iedName")
             cb_name = extref.get("srcCBName")
+            src_ld_inst = extref.get("srcLDInst", "").strip()
             
+            # Find subscriber parent node
             ancestor = extref.getparent()
             sub_ied_name = None
             while ancestor is not None:
@@ -105,6 +132,13 @@ def parse_and_validate_scl(file_path: str):
                 ancestor = ancestor.getparent()
                 
             if sub_ied_name and pub_ied_name and cb_name:
+                # Deduplication composite key now includes src_ld_inst to properly separate CB1/CB2 maps
+                sub_key = (sub_ied_name, pub_ied_name, src_ld_inst, cb_name)
+                if sub_key in processed_subscriptions:
+                    continue  # Skip redundant ExtRef rows (like stVal, q, t mapping attributes)
+                
+                processed_subscriptions.add(sub_key)
+
                 exp_rev = extref.get("srcInst", "").strip() or extref.get("confRev", "").strip()
                 exp_appid = "" 
                 
@@ -115,12 +149,25 @@ def parse_and_validate_scl(file_path: str):
                     if vendor_sub.get("APPID"):
                         exp_appid = vendor_sub.get("APPID").strip()
                 
+                # Precise fallback scoped to the exact logical device instance
                 if not exp_rev:
-                    ghost_cb = root.find(f".//IED[@name='{pub_ied_name}']//GSEControl[@name='{cb_name}']")
+                    ghost_cb = root.find(f".//IED[@name='{pub_ied_name}']//LDevice[@inst='{src_ld_inst}']//GSEControl[@name='{cb_name}']")
                     if ghost_cb is not None and ghost_cb.get("confRev"):
                         exp_rev = ghost_cb.get("confRev").strip()
 
-                payload_string = f"SUBSCRIBE||{exp_rev or 'AUTO'}||{exp_appid or 'AUTO'}"
+                # CALLING TEMPORARY DEBUG FOR SUBSCRIBER
+                print_parser_debug_info("SUBSCRIBER (SUBSCRIBE)", {
+                    "filename": filename,
+                    "pub_ied_name": pub_ied_name,
+                    "sub_ied_name": sub_ied_name,
+                    "src_ld_inst": src_ld_inst,
+                    "cb_name": cb_name,
+                    "exp_rev": exp_rev or 'AUTO',
+                    "exp_appid": exp_appid or 'AUTO'
+                })
+
+                # Append src_ld_inst to the payload string so it can be mapped accurately in the main engine
+                payload_string = f"SUBSCRIBE||{exp_rev or 'AUTO'}||{exp_appid or 'AUTO'}||{src_ld_inst}"
                 cursor.execute(
                     "INSERT INTO goose_links (publisher, subscriber, app_id, xpath) VALUES (?, ?, ?, ?)",
                     (pub_ied_name, sub_ied_name, cb_name, f"{filename}||{payload_string}")
