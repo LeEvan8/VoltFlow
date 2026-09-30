@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import ReactFlow, { Background, Controls } from 'reactflow';
 import type { EdgeProps } from 'reactflow'; 
 import 'reactflow/dist/style.css';
-import { useVoltFlowStore } from './store';
+import { API_BASE, useVoltFlowStore } from './store';
 import type { EdgeFlags, ExpectedParam } from './store';
 
 const PARAM_LABELS: Record<ExpectedParam, string> = {
@@ -148,7 +148,7 @@ export default function App() {
     const formData = new FormData();
     formData.append('file', file);
     try {
-      const res = await fetch('http://localhost:8000/api/v1/upload', { method: 'POST', body: formData });
+      const res = await fetch(`${API_BASE}/api/v1/upload`, { method: 'POST', body: formData });
       if (!res.ok) {
         const body = await res.json().catch(() => null);
         alert(`Upload failed: ${body?.detail ?? res.statusText}`);

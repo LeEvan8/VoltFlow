@@ -1,3 +1,4 @@
+import logging
 import os
 import shutil
 from contextlib import asynccontextmanager
@@ -6,6 +7,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.database import init_db, get_db_connection, clear_all
 from app.parser import parse_scl, store_parsed, SCLParseError
 from app.analysis import analyze
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger("voltflow")
 
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "uploaded_files")
 ALLOWED_EXTENSIONS = ('.scd', '.cid', '.iid', '.icd', '.ssd', '.sed', '.xml')
@@ -36,14 +40,18 @@ async def upload_scl_file(file: UploadFile = File(...)):
 
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     file_path = os.path.join(UPLOAD_DIR, filename)
-    with open(file_path, "wb") as buffer:
+    # Parse a temporary copy first so a failed re-upload never replaces a previously accepted file.
+    temp_path = file_path + ".part"
+    with open(temp_path, "wb") as buffer:
         buffer.write(await file.read())
 
     try:
-        parsed = parse_scl(file_path)
+        parsed = parse_scl(temp_path)
     except SCLParseError as e:
-        os.remove(file_path)
+        os.remove(temp_path)
+        logger.warning("Rejected upload %s: %s", filename, e)
         raise HTTPException(status_code=422, detail=f"{filename}: {e}")
+    os.replace(temp_path, file_path)
 
     conn = get_db_connection()
     try:
@@ -51,6 +59,9 @@ async def upload_scl_file(file: UploadFile = File(...)):
         conn.commit()
     finally:
         conn.close()
+    logger.info("Accepted upload %s: IEDs %s, %d GOOSE control blocks, %d bound inputs, %d vendor subscription records",
+                filename, ", ".join(ied[0] for ied in parsed.ieds), len(parsed.gse_controls), len(parsed.extrefs),
+                len(parsed.vendor_subscriptions))
     return {"status": "SUCCESS", "file": filename, "ieds": [ied[0] for ied in parsed.ieds]}
 
 
@@ -84,4 +95,5 @@ def reset_workspace():
     if os.path.exists(UPLOAD_DIR):
         shutil.rmtree(UPLOAD_DIR)
     os.makedirs(UPLOAD_DIR, exist_ok=True)
+    logger.info("Workspace reset: all uploads and parsed data cleared")
     return {"status": "CLEARED"}

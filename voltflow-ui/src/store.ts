@@ -1,5 +1,8 @@
 import { create } from 'zustand';
 
+// Backend base URL; override with VITE_API_URL (see .env.example).
+export const API_BASE: string = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+
 export interface IEDNode {
   id: string;
   type: string;
@@ -108,7 +111,7 @@ export const useVoltFlowStore = create<VoltFlowUIState>((set) => ({
   fetchTopology: async () => {
     set({ loading: true });
     try {
-      const res = await fetch('http://localhost:8000/api/v1/graph-data');
+      const res = await fetch(`${API_BASE}/api/v1/graph-data`);
       if (!res.ok) throw new Error("Backend infrastructure offline");
       const data = await res.json();
 
@@ -137,7 +140,7 @@ export const useVoltFlowStore = create<VoltFlowUIState>((set) => ({
         }
       }));
 
-      const errRes = await fetch('http://localhost:8000/api/v1/errors');
+      const errRes = await fetch(`${API_BASE}/api/v1/errors`);
       const errorsData = await errRes.json();
       
       set({ nodes: arrangedNodes, edges: mappedWires, errors: errorsData });
@@ -153,8 +156,10 @@ export const useVoltFlowStore = create<VoltFlowUIState>((set) => ({
 
   clearWorkspace: async () => {
     try {
-      await fetch('http://localhost:8000/api/v1/reset', { method: 'DELETE' });
+      await fetch(`${API_BASE}/api/v1/reset`, { method: 'DELETE' });
       set({ nodes: [], edges: [], errors: [], selectedIED: null, selectedEdgeId: null });
-    } catch (err) {}
+    } catch (err) {
+      console.error("[Workspace Reset Error]", err);
+    }
   }
 }));

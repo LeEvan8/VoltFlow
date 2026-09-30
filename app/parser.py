@@ -132,8 +132,11 @@ def parse_scl(file_path: str) -> ParsedSCL:
     try:
         parser = etree.XMLParser(remove_blank_text=True, resolve_entities=False, no_network=True, huge_tree=False)
         root = etree.parse(file_path, parser=parser).getroot()
-    except (etree.XMLSyntaxError, OSError) as e:
-        raise SCLParseError(f"Not a readable XML file: {e}") from e
+    except etree.XMLSyntaxError as e:
+        # e.msg already carries line/column; str(e) would also embed the server-side file path.
+        raise SCLParseError(f"Not a readable XML file: {e.msg}") from e
+    except OSError as e:
+        raise SCLParseError(f"Could not read the file: {e.strerror}") from e
 
     if _localname(root) != "SCL":
         raise SCLParseError(f"Root element is <{_localname(root)}>, expected <SCL>.")
