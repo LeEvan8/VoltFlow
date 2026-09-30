@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import ReactFlow, { Background, Controls } from 'reactflow';
+import type { ReactFlowInstance } from 'reactflow';
 import type { EdgeProps } from 'reactflow'; 
 import 'reactflow/dist/style.css';
-import { API_BASE, useVoltFlowStore } from './store';
-import type { EdgeFlags, ExpectedParam } from './store';
+import { useVoltFlowStore } from './store';
+import type { EdgeFlags, ExpectedParam, ValidationError } from './store';
 
 const PARAM_LABELS: Record<ExpectedParam, string> = {
   dataset: 'Data Set', conf_rev: 'confRev', appid: 'APPID', mac: 'MAC', go_id: 'GoID', vlan_id: 'VLAN ID', vlan_priority: 'Priority',
@@ -135,31 +136,64 @@ function CustomDirectionalWire({
 
 const customEdgeTypes = { directionalWire: CustomDirectionalWire };
 
+type Severity = ValidationError['severity'];
+const SEVERITIES: Severity[] = ['ERROR', 'WARNING', 'INFO'];
+const SEVERITY_TEXT: Record<Severity, string> = { ERROR: 'text-rose-400', WARNING: 'text-amber-400', INFO: 'text-sky-400' };
+const SEVERITY_CHIP: Record<Severity, string> = {
+  ERROR: 'bg-rose-950/60 text-rose-400 border-rose-900',
+  WARNING: 'bg-amber-950/60 text-amber-400 border-amber-900',
+  INFO: 'bg-sky-950/60 text-sky-400 border-sky-900',
+};
+
+function LegendLine({ color, dashed, label }: { color: string; dashed?: boolean; label: string }) {
+  return (
+    <div className="flex items-center gap-2">
+      <svg width="26" height="8" className="shrink-0"><line x1="1" y1="4" x2="25" y2="4" stroke={color} strokeWidth="3" strokeDasharray={dashed ? '5 3' : undefined} /></svg>
+      <span>{label}</span>
+    </div>
+  );
+}
+
 export default function App() {
-  const { nodes, edges, errors, selectedIED, selectedEdgeId, fetchTopology, setSelectedIED, setSelectedEdgeId, clearWorkspace } = useVoltFlowStore();
+  const {
+    nodes, edges, errors, files, selectedIED, selectedEdgeId, fetchTopology, uploadFiles, removeFile, setIedSource,
+    onNodesChange, relayout, setSelectedIED, setSelectedEdgeId, clearWorkspace,
+  } = useVoltFlowStore();
   const [expandedSignal, setExpandedSignal] = useState<string | null>(null);
+  const [severityFilter, setSeverityFilter] = useState<Record<Severity, boolean>>({ ERROR: true, WARNING: true, INFO: true });
+  const [groupByIed, setGroupByIed] = useState(false);
+  const [filesOpen, setFilesOpen] = useState(true);
+  const [showLegend, setShowLegend] = useState(true);
+  const [flow, setFlow] = useState<ReactFlowInstance | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [layoutVersion, setLayoutVersion] = useState(0);
 
   useEffect(() => { fetchTopology(); }, [fetchTopology]);
 
+  // Re-fit the view when the set of IEDs changes (upload, file removed) or after Auto layout, not on every refresh.
+  const nodeKey = nodes.map(n => n.id).join('|');
+  useEffect(() => {
+    if (flow && nodeKey) requestAnimationFrame(() => flow.fitView({ padding: 0.35, duration: 300 }));
+  }, [flow, nodeKey, layoutVersion]);
+
   const handleUiFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const input = e.target;
-    const file = input.files?.[0];
-    if (!file) return;
-    const formData = new FormData();
-    formData.append('file', file);
+    const selected = Array.from(input.files ?? []);
+    input.value = ''; // allow re-uploading the same files
+    if (selected.length === 0) return;
+    setUploading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/v1/upload`, { method: 'POST', body: formData });
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        alert(`Upload failed: ${body?.detail ?? res.statusText}`);
+      const failed = (await uploadFiles(selected)).filter(r => !r.ok);
+      if (failed.length > 0) {
+        alert(`${failed.length} of ${selected.length} file(s) failed to upload:\n\n${failed.map(f => `• ${f.message}`).join('\n')}`);
       }
-      fetchTopology();
-    } catch (err) {
-      console.error(err);
-      alert('Upload failed: backend unreachable.');
     } finally {
-      input.value = ''; // allow re-uploading the same file
+      setUploading(false);
     }
+  };
+
+  const handleRemoveFile = (name: string) => {
+    if (confirm(`Remove ${name} from the workspace?`)) removeFile(name);
   };
 
   const outboundSignals = edges.filter(e => e.source === selectedIED && !e.data.is_unresolved_stub);
@@ -167,9 +201,39 @@ export default function App() {
   const selectedEdgeDetails = edges.find(e => e.id === selectedEdgeId);
   const selectedNode = nodes.find(n => n.id === selectedIED);
 
+  const severityCounts = Object.fromEntries(SEVERITIES.map(sev => [sev, errors.filter(e => e.severity === sev).length])) as Record<Severity, number>;
+  const visibleErrors = errors.filter(e => severityFilter[e.severity]);
+  const errorGroups: [string | null, ValidationError[]][] = groupByIed
+    ? Object.entries(visibleErrors.reduce<Record<string, ValidationError[]>>((acc, e) => {
+        (acc[e.target_ied] ??= []).push(e);
+        return acc;
+      }, {})).sort(([a], [b]) => a.localeCompare(b))
+    : [[null, visibleErrors]];
+
+  const renderErrorCard = (err: ValidationError) => {
+    const isSelected = err.xpath ? selectedEdgeId === err.xpath : selectedIED === err.target_ied;
+    return (
+      <div
+        key={err.id}
+        onClick={() => err.xpath ? setSelectedEdgeId(err.xpath) : setSelectedIED(err.target_ied)}
+        className={`p-3.5 rounded-xl border text-xs cursor-pointer transition-all ${
+          isSelected
+            ? 'bg-amber-950/60 border-amber-500 shadow-lg shadow-amber-950/50 ring-1 ring-amber-500'
+            : 'bg-slate-950/40 border-slate-800 hover:border-amber-500/50'
+        }`}
+      >
+        <div className={`font-bold font-mono flex justify-between items-start gap-2 ${SEVERITY_TEXT[err.severity]}`}>
+          <span className="break-all">{err.rule_type}</span>
+          <span className="text-[10px] text-slate-500 font-sans uppercase whitespace-nowrap shrink-0">Tap to inspect ➔</span>
+        </div>
+        <p className="mt-1.5 text-slate-300 leading-relaxed font-sans">{err.message}</p>
+      </div>
+    );
+  };
+
   return (
     <div className="w-full h-screen bg-slate-950 text-slate-100 flex flex-col font-sans overflow-hidden select-none">
-      
+
       <header className="px-6 py-4 bg-slate-900 border-b border-slate-800 flex justify-between items-center shadow-md z-10">
         <div>
           <h1 className="text-xl font-black tracking-tight text-sky-400">VoltFlow SCT Workbench</h1>
@@ -177,54 +241,89 @@ export default function App() {
         </div>
         <div className="flex items-center gap-3">
           <button onClick={clearWorkspace} className="px-3 py-1.5 bg-rose-950/40 text-rose-400 border border-rose-900/50 text-xs font-semibold rounded-lg cursor-pointer hover:bg-rose-900/60 transition">🗑 Wipe Screen</button>
-          <label className="px-3 py-1.5 bg-slate-800 text-slate-300 border border-slate-700 text-xs font-semibold rounded-lg cursor-pointer hover:bg-slate-700 transition">
-            <span>📂 Upload Profile (.SCD / .CID / .IID)</span>
-            <input type="file" accept=".scd,.cid,.iid,.icd,.xml" onChange={handleUiFileUpload} className="hidden" />
+          <label className={`px-3 py-1.5 bg-slate-800 text-slate-300 border border-slate-700 text-xs font-semibold rounded-lg transition ${uploading ? 'opacity-60 cursor-wait' : 'cursor-pointer hover:bg-slate-700'}`}>
+            <span>{uploading ? '⏳ Uploading…' : '📂 Upload Profiles (.SCD / .CID / .IID)'}</span>
+            <input type="file" multiple accept=".scd,.cid,.iid,.icd,.ssd,.sed,.xml" onChange={handleUiFileUpload} disabled={uploading} className="hidden" />
           </label>
         </div>
       </header>
 
       <div className="flex-1 flex overflow-hidden">
-        
-        {/* Left Interactive Compliance Errors Panel */}
+
+        {/* Left panel: workspace files + compliance findings */}
         <div className="w-80 border-r border-slate-800 bg-slate-900/30 flex flex-col">
-          <div className="p-4 border-b border-slate-800 bg-slate-900/60 flex justify-between items-center">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Compliance Errors</span>
-            <span className="bg-red-950 text-red-400 border border-red-900 text-[10px] font-mono px-2 py-0.5 rounded-full font-bold">{errors.length}</span>
+          <div className="border-b border-slate-800">
+            <button onClick={() => setFilesOpen(!filesOpen)} className="w-full p-4 bg-slate-900/60 flex justify-between items-center cursor-pointer">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-400">{filesOpen ? '▾' : '▸'} Workspace Files</span>
+              <span className="bg-slate-800 text-slate-300 border border-slate-700 text-[10px] font-mono px-2 py-0.5 rounded-full font-bold">{files.length}</span>
+            </button>
+            {filesOpen && (
+              <div className="px-4 pb-3 pt-1 space-y-1.5 max-h-48 overflow-y-auto">
+                {files.length === 0 ? (
+                  <div className="text-[11px] text-slate-600 italic py-1">No files uploaded. Select several at once; they are applied in order.</div>
+                ) : files.map(f => (
+                  <div key={f.name} className="flex items-start justify-between gap-2 text-[11px] font-mono bg-slate-950/40 border border-slate-800/80 rounded-lg px-2.5 py-1.5">
+                    <div className="min-w-0">
+                      <div className="text-slate-300 break-all"><span className="text-slate-600">{f.order}.</span> {f.name}</div>
+                      <div className="text-slate-500 text-[10px] break-all">{f.ieds.join(', ')}</div>
+                    </div>
+                    <button onClick={() => handleRemoveFile(f.name)} title={`Remove ${f.name}`} className="text-slate-500 hover:text-rose-400 cursor-pointer shrink-0 px-1">✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="p-4 border-b border-slate-800 bg-slate-900/60 space-y-2.5">
+            <div className="flex justify-between items-center">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Compliance Findings</span>
+              <span className="bg-red-950 text-red-400 border border-red-900 text-[10px] font-mono px-2 py-0.5 rounded-full font-bold">{visibleErrors.length}/{errors.length}</span>
+            </div>
+            <div className="flex flex-wrap gap-1.5 items-center">
+              {SEVERITIES.map(sev => (
+                <button
+                  key={sev}
+                  onClick={() => setSeverityFilter({ ...severityFilter, [sev]: !severityFilter[sev] })}
+                  className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded border cursor-pointer transition ${
+                    severityFilter[sev] ? SEVERITY_CHIP[sev] : 'bg-transparent text-slate-600 border-slate-800 line-through'
+                  }`}
+                >
+                  {sev} {severityCounts[sev]}
+                </button>
+              ))}
+              <label className="ml-auto flex items-center gap-1 text-[10px] text-slate-400 cursor-pointer">
+                <input type="checkbox" checked={groupByIed} onChange={e => setGroupByIed(e.target.checked)} className="accent-sky-500" />
+                Group by IED
+              </label>
+            </div>
           </div>
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
             {errors.length === 0 ? (
               <div className="text-center py-12 text-xs text-slate-600 italic">No configuration mismatch anomalies captured.</div>
+            ) : visibleErrors.length === 0 ? (
+              <div className="text-center py-12 text-xs text-slate-600 italic">All findings are hidden by the severity filter.</div>
             ) : (
-              errors.map(err => {
-                const isSelected = err.xpath ? selectedEdgeId === err.xpath : selectedIED === err.target_ied;
-                const severityColor = err.severity === 'ERROR' ? 'text-rose-400' : err.severity === 'INFO' ? 'text-sky-400' : 'text-amber-400';
-                return (
-                  <div
-                    key={err.id}
-                    onClick={() => err.xpath ? setSelectedEdgeId(err.xpath) : setSelectedIED(err.target_ied)}
-                    className={`p-3.5 rounded-xl border text-xs cursor-pointer transition-all ${
-                      isSelected
-                        ? 'bg-amber-950/60 border-amber-500 shadow-lg shadow-amber-950/50 ring-1 ring-amber-500'
-                        : 'bg-slate-950/40 border-slate-800 hover:border-amber-500/50'
-                    }`}
-                  >
-                    <div className={`font-bold font-mono flex justify-between items-start gap-2 ${severityColor}`}>
-                      <span className="break-all">{err.rule_type}</span>
-                      <span className="text-[10px] text-slate-500 font-sans uppercase whitespace-nowrap shrink-0">Tap to inspect ➔</span>
-                    </div>
-                    <p className="mt-1.5 text-slate-300 leading-relaxed font-sans">{err.message}</p>
-                  </div>
-                );
-              })
+              errorGroups.map(([ied, group]) => (
+                <div key={ied ?? 'all'} className="space-y-3">
+                  {ied !== null && (
+                    <button onClick={() => setSelectedIED(ied)} className="w-full flex justify-between items-center text-[11px] font-mono font-bold text-emerald-400 border-b border-slate-800 pb-1 pt-1 cursor-pointer">
+                      <span>{ied}</span>
+                      <span className="text-slate-500 font-normal">{group.length}</span>
+                    </button>
+                  )}
+                  {group.map(renderErrorCard)}
+                </div>
+              ))
             )}
           </div>
         </div>
 
         {/* Central Canvas Screen */}
         <div className="flex-1 bg-slate-950 relative">
-          <ReactFlow 
+          <ReactFlow
             nodes={nodes} edges={edges} edgeTypes={customEdgeTypes}
+            onNodesChange={onNodesChange}
+            onInit={setFlow}
             onNodeClick={(_, node) => setSelectedIED(node.id)}
             onEdgeClick={(_, edge) => setSelectedEdgeId(edge.id)}
             onPaneClick={() => { setSelectedIED(null); setSelectedEdgeId(null); }}
@@ -233,6 +332,34 @@ export default function App() {
             <Background color="#1e293b" gap={24} size={1.2} />
             <Controls />
           </ReactFlow>
+
+          <div className="absolute top-3 right-3 z-10 flex gap-2">
+            <button
+              onClick={async () => { await relayout(); setLayoutVersion(v => v + 1); }}
+              title="Re-arrange all IEDs automatically (discards manual positions)"
+              className="px-2.5 py-1 bg-slate-900/90 text-slate-300 border border-slate-700 text-[11px] font-semibold rounded-lg cursor-pointer hover:bg-slate-800 transition"
+            >
+              ⤢ Auto layout
+            </button>
+            <button
+              onClick={() => setShowLegend(!showLegend)}
+              className="px-2.5 py-1 bg-slate-900/90 text-slate-300 border border-slate-700 text-[11px] font-semibold rounded-lg cursor-pointer hover:bg-slate-800 transition"
+            >
+              {showLegend ? 'Hide legend' : 'Legend'}
+            </button>
+          </div>
+
+          {showLegend && (
+            <div className="absolute bottom-8 right-3 z-10 bg-slate-900/95 border border-slate-800 rounded-xl p-3 text-[10px] font-mono text-slate-400 space-y-1.5 shadow-xl">
+              <div className="text-slate-500 uppercase tracking-wider font-sans font-bold mb-1">Legend</div>
+              <LegendLine color="#22c55e" label="VALID · UNVERIFIED · green notes" />
+              <LegendLine color="#eab308" label="Warning (e.g. CONFREV_DESYNC)" />
+              <LegendLine color="#ef4444" label="Error (routing, type, data set…)" />
+              <LegendLine color="#f59e0b" label="Orphaned stream (0 listeners)" />
+              <LegendLine color="#eab308" dashed label="Unresolved source (missing)" />
+              <div className="pt-1 text-slate-500 font-sans">Drag IEDs to move them; Auto layout resets.</div>
+            </div>
+          )}
         </div>
 
         {/* Right Dynamic Device Inspector */}
@@ -377,6 +504,24 @@ export default function App() {
                 {selectedNode && (
                   <div className="text-[10px] text-slate-500 font-mono mt-1">
                     {selectedNode.data.manufacturer || 'Unknown vendor'} · from {selectedNode.data.file}
+                  </div>
+                )}
+                {selectedNode && selectedNode.data.copies.length > 1 && (
+                  <div className="mt-3 pt-3 border-t border-slate-800 space-y-1.5">
+                    <label className="text-[10px] text-slate-400 uppercase tracking-wider block" htmlFor="ied-source">Authoritative file</label>
+                    <select
+                      id="ied-source"
+                      value={selectedNode.data.source_pinned ? selectedNode.data.file : ''}
+                      onChange={e => setIedSource(selectedNode.id, e.target.value || null)}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-[11px] font-mono text-slate-200 cursor-pointer"
+                    >
+                      <option value="">Latest upload ({selectedNode.data.copies[0]})</option>
+                      {selectedNode.data.copies.map(f => <option key={f} value={f}>{f}</option>)}
+                    </select>
+                    <p className="text-[10px] text-slate-500 leading-relaxed">
+                      {selectedNode.id} appears in {selectedNode.data.copies.length} files. Copies in other files are treated as what those
+                      files' IEDs expect, so pick the file that really configures {selectedNode.id} (usually its own CID/IID or the current SCD).
+                    </p>
                   </div>
                 )}
               </div>

@@ -81,14 +81,22 @@ def _is_active(cb):
 def analyze(conn):
     file_seq = {r["name"]: r["seq"] for r in conn.execute("SELECT name, seq FROM files")}
 
-    # Authoritative copy of each IED = the most recently uploaded file that contains it.
+    # Authoritative copy of each IED = the file the user chose for it, else the most recently uploaded file
+    # that contains it. A choice pointing at a file that no longer contains the IED is ignored.
     ied_rows = conn.execute("SELECT * FROM ieds").fetchall()
-    auth_file, ied_info = {}, {}
+    auth_file, ied_info, ied_files = {}, {}, defaultdict(list)
     for row in ied_rows:
         name = row["name"]
+        ied_files[name].append(row["source_file"])
         if name not in auth_file or file_seq.get(row["source_file"], 0) > file_seq.get(auth_file[name], 0):
             auth_file[name] = row["source_file"]
             ied_info[name] = dict(row)
+    pinned = set()
+    for choice in conn.execute("SELECT * FROM ied_sources"):
+        row = next((r for r in ied_rows if r["name"] == choice["ied_name"] and r["source_file"] == choice["source_file"]), None)
+        if row is not None:
+            auth_file[row["name"]], ied_info[row["name"]] = row["source_file"], dict(row)
+            pinned.add(row["name"])
 
     def is_auth(row, ied_col="ied_name"):
         return auth_file.get(row[ied_col]) == row["source_file"]
@@ -645,6 +653,8 @@ def analyze(conn):
                    "reason": "no data set" if not auth_cbs[k]["dataset"] else f"type {auth_cbs[k]['cb_type']}"}
                   for k in cbs_by_ied[name] if not _is_active(auth_cbs[k])]
         nodes.append({"name": name, "type": ied_info[name]["type"], "manufacturer": ied_info[name]["manufacturer"],
-                      "source_file": auth_file[name], "unused_cbs": unused})
+                      "source_file": auth_file[name], "source_pinned": name in pinned,
+                      # every uploaded file containing this IED, newest first
+                      "copies": sorted(ied_files[name], key=lambda f: -file_seq.get(f, 0)), "unused_cbs": unused})
 
     return {"nodes": nodes, "edges": edges, "errors": errors}

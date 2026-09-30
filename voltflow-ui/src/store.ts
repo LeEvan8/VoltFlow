@@ -1,4 +1,7 @@
 import { create } from 'zustand';
+import { applyNodeChanges } from 'reactflow';
+import type { NodeChange } from 'reactflow';
+import { layoutGraph } from './layout';
 
 // Backend base URL; override with VITE_API_URL (see .env.example).
 export const API_BASE: string = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
@@ -6,7 +9,14 @@ export const API_BASE: string = import.meta.env.VITE_API_URL ?? 'http://localhos
 export interface IEDNode {
   id: string;
   type: string;
-  data: { label: string; file: string; manufacturer: string | null; unused_cbs: UnusedControlBlock[] };
+  data: {
+    label: string;
+    file: string;                 // authoritative file for this IED
+    source_pinned: boolean;       // true when the user chose `file`; false = latest upload wins
+    copies: string[];             // every uploaded file containing this IED, newest first
+    manufacturer: string | null;
+    unused_cbs: UnusedControlBlock[];
+  };
   position: { x: number; y: number };
 }
 
@@ -88,23 +98,51 @@ export interface ValidationError {
   target_ied: string;
 }
 
+export interface WorkspaceFile {
+  name: string;
+  order: number;   // upload order; by default the latest file containing an IED is authoritative
+  ieds: string[];
+}
+
+export interface UploadResult {
+  file: string;
+  ok: boolean;
+  message: string;
+}
+
+type Position = { x: number; y: number };
+
 interface VoltFlowUIState {
   nodes: IEDNode[];
   edges: GOOSEControlDetails[];
   errors: ValidationError[];
+  files: WorkspaceFile[];
+  manualPositions: Record<string, Position>;  // nodes the user dragged keep their place across refreshes
   selectedIED: string | null;
   selectedEdgeId: string | null;
   loading: boolean;
   fetchTopology: () => Promise<void>;
+  uploadFiles: (files: File[]) => Promise<UploadResult[]>;
+  removeFile: (name: string) => Promise<void>;
+  setIedSource: (ied: string, sourceFile: string | null) => Promise<void>;
+  onNodesChange: (changes: NodeChange[]) => void;
+  relayout: () => Promise<void>;
   setSelectedIED: (iedId: string | null) => void;
   setSelectedEdgeId: (edgeId: string | null) => void;
   clearWorkspace: () => Promise<void>;
 }
 
-export const useVoltFlowStore = create<VoltFlowUIState>((set) => ({
+async function errorDetail(res: Response): Promise<string> {
+  const body = await res.json().catch(() => null);
+  return body?.detail ?? res.statusText;
+}
+
+export const useVoltFlowStore = create<VoltFlowUIState>((set, get) => ({
   nodes: [],
   edges: [],
   errors: [],
+  files: [],
+  manualPositions: {},
   selectedIED: null,
   selectedEdgeId: null,
   loading: false,
@@ -112,18 +150,15 @@ export const useVoltFlowStore = create<VoltFlowUIState>((set) => ({
   fetchTopology: async () => {
     set({ loading: true });
     try {
-      const res = await fetch(`${API_BASE}/api/v1/graph-data`);
-      if (!res.ok) throw new Error("Backend infrastructure offline");
-      const data = await res.json();
+      const [graphRes, errRes, filesRes] = await Promise.all([
+        fetch(`${API_BASE}/api/v1/graph-data`),
+        fetch(`${API_BASE}/api/v1/errors`),
+        fetch(`${API_BASE}/api/v1/files`),
+      ]);
+      if (!graphRes.ok || !errRes.ok || !filesRes.ok) throw new Error("Backend infrastructure offline");
+      const [data, errorsData, filesData] = await Promise.all([graphRes.json(), errRes.json(), filesRes.json()]);
 
-      const arrangedNodes = data.nodes.map((node: any, idx: number) => ({
-        id: node.name,
-        type: 'default',
-        data: { label: node.name, file: node.source_file, manufacturer: node.manufacturer, unused_cbs: node.unused_cbs },
-        position: { x: 220 + (idx % 2) * 450, y: 180 + Math.floor(idx / 2) * 260 }
-      }));
-
-      const mappedWires = data.edges.map((edge: any) => ({
+      const mappedWires: GOOSEControlDetails[] = data.edges.map((edge: any) => ({
         id: `e-${edge.id}`,
         source: edge.publisher,
         target: edge.subscriber,
@@ -141,15 +176,87 @@ export const useVoltFlowStore = create<VoltFlowUIState>((set) => ({
         }
       }));
 
-      const errRes = await fetch(`${API_BASE}/api/v1/errors`);
-      const errorsData = await errRes.json();
-      
-      set({ nodes: arrangedNodes, edges: mappedWires, errors: errorsData });
+      const layout = await layoutGraph(data.nodes.map((n: any) => n.name), mappedWires);
+      const { manualPositions, selectedIED, selectedEdgeId } = get();
+      const arrangedNodes: IEDNode[] = data.nodes.map((node: any) => ({
+        id: node.name,
+        type: 'default',
+        data: {
+          label: node.name, file: node.source_file, source_pinned: node.source_pinned, copies: node.copies,
+          manufacturer: node.manufacturer, unused_cbs: node.unused_cbs,
+        },
+        position: manualPositions[node.name] ?? layout[node.name] ?? { x: 0, y: 0 },
+      }));
+
+      set({
+        nodes: arrangedNodes, edges: mappedWires, errors: errorsData, files: filesData,
+        // drop selections that no longer exist (e.g. after removing a file)
+        selectedIED: arrangedNodes.some(n => n.id === selectedIED) ? selectedIED : null,
+        selectedEdgeId: mappedWires.some(e => e.id === selectedEdgeId) ? selectedEdgeId : null,
+      });
     } catch (err) {
       console.error("[Workspace State Error]", err);
     } finally {
       set({ loading: false });
     }
+  },
+
+  uploadFiles: async (files) => {
+    // Sequential on purpose: upload order decides which copy of an IED is authoritative by default.
+    const results: UploadResult[] = [];
+    for (const file of files) {
+      const formData = new FormData();
+      formData.append('file', file);
+      try {
+        const res = await fetch(`${API_BASE}/api/v1/upload`, { method: 'POST', body: formData });
+        results.push(res.ok
+          ? { file: file.name, ok: true, message: 'uploaded' }
+          : { file: file.name, ok: false, message: await errorDetail(res) });
+      } catch {
+        results.push({ file: file.name, ok: false, message: 'backend unreachable' });
+      }
+    }
+    await get().fetchTopology();
+    return results;
+  },
+
+  removeFile: async (name) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/files/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(await errorDetail(res));
+    } catch (err) {
+      console.error("[File Removal Error]", err);
+      alert(`Could not remove ${name}: ${err instanceof Error ? err.message : err}`);
+    }
+    await get().fetchTopology();
+  },
+
+  setIedSource: async (ied, sourceFile) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/ieds/${encodeURIComponent(ied)}/source`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_file: sourceFile }),
+      });
+      if (!res.ok) throw new Error(await errorDetail(res));
+    } catch (err) {
+      console.error("[IED Source Error]", err);
+      alert(`Could not change the authoritative file for ${ied}: ${err instanceof Error ? err.message : err}`);
+    }
+    await get().fetchTopology();
+  },
+
+  onNodesChange: (changes) => {
+    const manualPositions = { ...get().manualPositions };
+    for (const change of changes) {
+      if (change.type === 'position' && change.position) manualPositions[change.id] = change.position;
+    }
+    set({ nodes: applyNodeChanges(changes, get().nodes) as IEDNode[], manualPositions });
+  },
+
+  relayout: async () => {
+    set({ manualPositions: {} });
+    await get().fetchTopology();
   },
 
   setSelectedIED: (iedId) => set({ selectedIED: iedId, selectedEdgeId: null }),
@@ -158,7 +265,7 @@ export const useVoltFlowStore = create<VoltFlowUIState>((set) => ({
   clearWorkspace: async () => {
     try {
       await fetch(`${API_BASE}/api/v1/reset`, { method: 'DELETE' });
-      set({ nodes: [], edges: [], errors: [], selectedIED: null, selectedEdgeId: null });
+      set({ nodes: [], edges: [], errors: [], files: [], manualPositions: {}, selectedIED: null, selectedEdgeId: null });
     } catch (err) {
       console.error("[Workspace Reset Error]", err);
     }

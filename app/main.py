@@ -2,9 +2,11 @@ import logging
 import os
 import shutil
 from contextlib import asynccontextmanager
+from typing import Optional
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from app.database import init_db, get_db_connection, clear_all
+from pydantic import BaseModel
+from app.database import init_db, get_db_connection, clear_all, remove_file
 from app.parser import parse_scl, store_parsed, SCLParseError
 from app.analysis import analyze
 
@@ -84,6 +86,62 @@ def get_graph_data():
 @app.get("/api/v1/errors")
 def get_errors():
     return _analysis()["errors"]
+
+
+@app.get("/api/v1/files")
+def list_files():
+    """Uploaded files in upload order, with the IEDs each one contains."""
+    conn = get_db_connection()
+    try:
+        files = conn.execute("SELECT name, seq FROM files ORDER BY seq").fetchall()
+        ieds = {}
+        for row in conn.execute("SELECT source_file, name FROM ieds ORDER BY name"):
+            ieds.setdefault(row["source_file"], []).append(row["name"])
+        return [{"name": f["name"], "order": f["seq"], "ieds": ieds.get(f["name"], [])} for f in files]
+    finally:
+        conn.close()
+
+
+@app.delete("/api/v1/files/{filename}")
+def delete_file(filename: str):
+    filename = os.path.basename(filename)
+    conn = get_db_connection()
+    try:
+        if not remove_file(conn, filename):
+            raise HTTPException(status_code=404, detail=f"{filename} is not in the workspace.")
+        conn.commit()
+    finally:
+        conn.close()
+    path = os.path.join(UPLOAD_DIR, filename)
+    if os.path.exists(path):
+        os.remove(path)
+    logger.info("Removed %s from the workspace", filename)
+    return {"status": "REMOVED", "file": filename}
+
+
+class IedSource(BaseModel):
+    source_file: Optional[str] = None  # None: back to "latest upload wins"
+
+
+@app.put("/api/v1/ieds/{ied_name}/source")
+def set_ied_source(ied_name: str, body: IedSource):
+    """Choose which uploaded file is authoritative for an IED (e.g. its own CID rather than a copy in a subscriber's file)."""
+    conn = get_db_connection()
+    try:
+        files = [r["source_file"] for r in conn.execute("SELECT source_file FROM ieds WHERE name = ?", (ied_name,))]
+        if not files:
+            raise HTTPException(status_code=404, detail=f"IED '{ied_name}' is not in any uploaded file.")
+        if body.source_file is None:
+            conn.execute("DELETE FROM ied_sources WHERE ied_name = ?", (ied_name,))
+        elif body.source_file not in files:
+            raise HTTPException(status_code=400, detail=f"'{body.source_file}' does not contain IED '{ied_name}'.")
+        else:
+            conn.execute("INSERT OR REPLACE INTO ied_sources (ied_name, source_file) VALUES (?, ?)", (ied_name, body.source_file))
+        conn.commit()
+    finally:
+        conn.close()
+    logger.info("Authoritative file for %s: %s", ied_name, body.source_file or "latest upload")
+    return {"ied": ied_name, "source_file": body.source_file}
 
 
 @app.delete("/api/v1/reset")

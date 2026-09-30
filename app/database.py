@@ -6,7 +6,7 @@ from pathlib import Path
 DB_PATH = os.environ.get("VOLTFLOW_DB", str(Path(__file__).resolve().parent.parent / "voltflow.db"))
 
 # Bump when the schema changes; older databases are dropped and rebuilt (re-upload files).
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA = """
 -- One row per uploaded file. seq orders uploads: the latest file containing an IED is its
@@ -123,6 +123,12 @@ CREATE TABLE vendor_signal_types (
     b_type      TEXT NOT NULL
 );
 
+-- User's choice of which uploaded file is authoritative for an IED (overrides "latest upload wins").
+CREATE TABLE ied_sources (
+    ied_name    TEXT PRIMARY KEY,
+    source_file TEXT NOT NULL
+);
+
 -- Communication/SubNetwork/ConnectedAP: which subnetwork each IED access point is on.
 CREATE TABLE connected_aps (
     source_file TEXT NOT NULL,
@@ -158,5 +164,13 @@ def init_db():
 
 
 def clear_all(conn):
-    for table in ["files", *DATA_TABLES]:
+    for table in ["files", "ied_sources", *DATA_TABLES]:
         conn.execute(f"DELETE FROM {table}")
+
+
+def remove_file(conn, filename):
+    """Forget everything parsed from one file, including authority choices that pointed at it."""
+    for table in DATA_TABLES:
+        conn.execute(f"DELETE FROM {table} WHERE source_file = ?", (filename,))
+    conn.execute("DELETE FROM ied_sources WHERE source_file = ?", (filename,))
+    return conn.execute("DELETE FROM files WHERE name = ?", (filename,)).rowcount
