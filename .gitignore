@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Local runtime data
+voltflow.db
+*.db-journal
+uploaded_files/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
