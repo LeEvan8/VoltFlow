@@ -3,3 +3,5 @@ uvicorn app.main:app --reload --port 8000
 
 cd voltflow-ui 
 npm run dev
+run tests (from root directory):
+python -m pytest
