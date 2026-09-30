@@ -26,6 +26,7 @@ export interface EdgeFlags {
   goid_mismatch: boolean;
   vlan_mismatch: boolean;
   dataset_mismatch: boolean;
+  type_mismatch: boolean;
   appid_collision: boolean;
 }
 

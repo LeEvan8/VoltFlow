@@ -11,7 +11,9 @@ from app.analysis import analyze
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("voltflow")
 
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "uploaded_files")
+# Override with VOLTFLOW_UPLOAD_DIR (e.g. for test runs) so the working uploads folder is never touched.
+UPLOAD_DIR = os.environ.get("VOLTFLOW_UPLOAD_DIR",
+                            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "uploaded_files"))
 ALLOWED_EXTENSIONS = ('.scd', '.cid', '.iid', '.icd', '.ssd', '.sed', '.xml')
 
 

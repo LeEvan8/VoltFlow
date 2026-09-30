@@ -1,3 +1,5 @@
+import json
+import re
 from dataclasses import dataclass, field
 from lxml import etree
 
@@ -16,6 +18,8 @@ class ParsedSCL:
     dataset_members: list = field(default_factory=list)
     extrefs: list = field(default_factory=list)
     vendor_subscriptions: list = field(default_factory=list)
+    vendor_signal_types: list = field(default_factory=list)
+    connected_aps: list = field(default_factory=list)
 
 
 def _localname(elem):
@@ -82,6 +86,26 @@ def _collect_vendor_subscriptions(root):
     return sorted(found, key=lambda r: tuple(v or "" for v in r))
 
 
+def _collect_vendor_signal_types(root):
+    """Per-signal expected types from ExtRef companion records (e.g. Schneider's Private with bType).
+
+    Row: (sub_ied, pub_ied, cb_name, cb_ld, sig_ld, prefix, ln_class, ln_inst, do_name, da_name, b_type)
+    cb_ld is the control block's LD (ldName); sig_ld is the LD of the signal itself (ldInst)."""
+    single_ied = _single_ied_name(root)
+    found = set()
+    for elem in root.iter():
+        if not isinstance(elem.tag, str) or _localname(elem) in ("ExtRef", "IED", "GSEControl", "GooseSubscription"):
+            continue
+        pub_ied, cb_name, b_type, do_name = _attr(elem, "iedName"), _attr(elem, "srcCBName"), _attr(elem, "bType"), _attr(elem, "doName")
+        if not (pub_ied and cb_name and b_type and do_name):
+            continue
+        sub_ied = _owning_ied(elem, single_ied)
+        if sub_ied:
+            found.add((sub_ied, pub_ied, cb_name, _attr(elem, "ldName"), _attr(elem, "ldInst"), _attr(elem, "prefix") or "",
+                       _attr(elem, "lnClass"), _attr(elem, "lnInst") or "", do_name, _attr(elem, "daName"), b_type))
+    return sorted(found, key=lambda r: tuple(v or "" for v in r))
+
+
 def _normalize_to_scl_namespace(root):
     """Drop vendor-namespaced elements/attributes (e.g. SEL's esel:Address copies inside Private),
     then strip the SCL namespace so plain tag names can be used."""
@@ -109,13 +133,109 @@ def _text(elem):
 
 
 def _index_gse_addresses(root):
-    """(iedName, ldInst, cbName) -> Communication/SubNetwork/ConnectedAP/GSE element."""
+    """(iedName, ldInst, cbName) -> (GSE element, SubNetwork name, ConnectedAP apName)."""
     index = {}
     for cap in root.iter("ConnectedAP"):
         ied_name = cap.get("iedName")
+        subnet = cap.getparent().get("name") if cap.getparent() is not None else None
         for gse in cap.findall("GSE"):
-            index.setdefault((ied_name, gse.get("ldInst", ""), gse.get("cbName", "")), gse)
+            index.setdefault((ied_name, gse.get("ldInst", ""), gse.get("cbName", "")), (gse, subnet, cap.get("apName")))
     return index
+
+
+# ---------------------------------------------------------------------------
+# DataTypeTemplates: resolve data set members to their leaf attribute types
+# ---------------------------------------------------------------------------
+_ARRAY_INDEX = re.compile(r"\(\d+\)$")
+_MAX_TYPE_DEPTH = 12  # guards against malformed, self-referencing templates
+
+
+def _type_index(root):
+    """LNodeType/DOType/DAType lookups, children kept in document order (the order defines the payload)."""
+    templates = root.find("DataTypeTemplates")
+    lnodetypes, dotypes, datypes = {}, {}, {}
+    if templates is None:
+        return lnodetypes, dotypes, datypes
+    for lnt in templates.findall("LNodeType"):
+        lnodetypes[lnt.get("id")] = {do.get("name"): do.get("type") for do in lnt.findall("DO")}
+    for dot in templates.findall("DOType"):
+        children = []
+        for child in dot:
+            if child.tag == "DA":
+                children.append(("DA", child.get("name"), child.get("fc"), child.get("bType"), child.get("type")))
+            elif child.tag == "SDO":
+                children.append(("SDO", child.get("name"), None, None, child.get("type")))
+        dotypes[dot.get("id")] = children
+    for dat in templates.findall("DAType"):
+        datypes[dat.get("id")] = [(bda.get("name"), bda.get("bType"), bda.get("type")) for bda in dat.findall("BDA")]
+    return lnodetypes, dotypes, datypes
+
+
+def _ln_types(ied):
+    """(ldInst, prefix, lnClass, lnInst) -> lnType for every LN0/LN of an IED."""
+    types = {}
+    for ldevice in ied.iter("LDevice"):
+        ld_inst = ldevice.get("inst", "")
+        for ln in ldevice:
+            if ln.tag == "LN0":
+                types[(ld_inst, "", "LLN0", "")] = ln.get("lnType")
+            elif ln.tag == "LN":
+                types[(ld_inst, ln.get("prefix", "") or "", ln.get("lnClass"), ln.get("inst", "") or "")] = ln.get("lnType")
+    return types
+
+
+def _expand_da(path, btype, type_id, datypes, depth):
+    """Leaf (path, bType) pairs of an attribute; Struct attributes expand into their BDAs."""
+    if btype == "Struct" and type_id in datypes and depth < _MAX_TYPE_DEPTH:
+        leaves = []
+        for name, child_btype, child_type in datypes[type_id]:
+            leaves += _expand_da(f"{path}.{name}", child_btype, child_type, datypes, depth + 1)
+        return leaves
+    return [(path, btype or "?")]
+
+
+def _expand_do(path, type_id, fc, dotypes, datypes, depth):
+    """Leaves of a data object restricted to one functional constraint, SDOs included."""
+    leaves = []
+    if type_id not in dotypes or depth >= _MAX_TYPE_DEPTH:
+        return leaves
+    for kind, name, child_fc, btype, child_type in dotypes[type_id]:
+        if kind == "DA" and child_fc == fc:
+            leaves += _expand_da(f"{path}.{name}", btype, child_type, datypes, depth + 1)
+        elif kind == "SDO":
+            leaves += _expand_do(f"{path}.{name}", child_type, fc, dotypes, datypes, depth + 1)
+    return leaves
+
+
+def resolve_leaf_types(types, ln_types, ld_inst, prefix, ln_class, ln_inst, do_name, da_name, fc):
+    """Leaf attribute types of one FCDA/signal, e.g. [("Op.general", "BOOLEAN"), ("Op.q", "Quality")].
+    Returns None when the templates don't allow a full resolution (unknown, never compared)."""
+    lnodetypes, dotypes, datypes = types
+    ln_type = ln_types.get((ld_inst or "", prefix or "", ln_class, ln_inst or ""))
+    if not ln_type or ln_type not in lnodetypes or not do_name:
+        return None
+    do_parts = do_name.split(".")
+    type_id = lnodetypes[ln_type].get(_ARRAY_INDEX.sub("", do_parts[0]))
+    for part in do_parts[1:]:
+        child = next((c for c in dotypes.get(type_id, []) if c[0] == "SDO" and c[1] == _ARRAY_INDEX.sub("", part)), None)
+        if child is None:
+            return None
+        type_id = child[4]
+    if type_id not in dotypes:
+        return None
+    if not da_name:
+        return _expand_do(do_name, type_id, fc, dotypes, datypes, 0) or None
+    da_parts = da_name.split(".")
+    child = next((c for c in dotypes[type_id] if c[0] == "DA" and c[1] == _ARRAY_INDEX.sub("", da_parts[0])), None)
+    if child is None:
+        return None
+    btype, attr_type = child[3], child[4]
+    for part in da_parts[1:]:
+        bda = next((b for b in datypes.get(attr_type, []) if b[0] == _ARRAY_INDEX.sub("", part)), None)
+        if bda is None:
+            return None
+        btype, attr_type = bda[1], bda[2]
+    return _expand_da(f"{do_name}.{da_name}", btype, attr_type, datypes, 0)
 
 
 def _read_gse_address(gse):
@@ -143,14 +263,21 @@ def parse_scl(file_path: str) -> ParsedSCL:
 
     result = ParsedSCL()
     result.vendor_subscriptions = _collect_vendor_subscriptions(root)
+    result.vendor_signal_types = _collect_vendor_signal_types(root)
     root = _normalize_to_scl_namespace(root)
     gse_index = _index_gse_addresses(root)
+    types = _type_index(root)
+    for cap in root.iter("ConnectedAP"):
+        if cap.get("iedName"):
+            subnet = cap.getparent().get("name") if cap.getparent() is not None else None
+            result.connected_aps.append((cap.get("iedName"), cap.get("apName"), subnet))
 
     for ied in root.findall("IED"):
         ied_name = ied.get("name")
         if not ied_name:
             continue
         result.ieds.append((ied_name, ied.get("type"), ied.get("manufacturer")))
+        ln_types = _ln_types(ied)
 
         for ldevice in ied.iter("LDevice"):
             ld_inst = ldevice.get("inst", "")
@@ -163,7 +290,7 @@ def parse_scl(file_path: str) -> ParsedSCL:
             for gcb in ln0.findall("GSEControl"):
                 cb_name = gcb.get("name", "")
                 dataset = gcb.get("datSet") or None
-                gse = gse_index.get((ied_name, ld_inst, cb_name))
+                gse, subnet, ap_name = gse_index.get((ied_name, ld_inst, cb_name), (None, None, None))
                 addr, min_time, max_time = _read_gse_address(gse) if gse is not None else ({}, None, None)
 
                 result.gse_controls.append((
@@ -172,16 +299,21 @@ def parse_scl(file_path: str) -> ParsedSCL:
                     1 if gse is not None else 0,
                     addr.get("MAC-Address"), addr.get("APPID"), addr.get("VLAN-ID"), addr.get("VLAN-PRIORITY"),
                     min_time, max_time,
+                    1 if dataset in datasets else 0, subnet, ap_name,
                 ))
                 for dest in gcb.findall("IEDName"):
                     if _text(dest):
                         result.gse_destinations.append((ied_name, ld_inst, cb_name, _text(dest)))
                 if dataset and dataset in datasets:
                     for fcda in datasets[dataset].findall("FCDA"):
+                        leaves = resolve_leaf_types(types, ln_types, fcda.get("ldInst") or ld_inst, fcda.get("prefix", ""),
+                                                    fcda.get("lnClass"), fcda.get("lnInst", ""), fcda.get("doName"),
+                                                    fcda.get("daName"), fcda.get("fc"))
                         result.dataset_members.append((
                             ied_name, ld_inst, dataset,
                             fcda.get("ldInst"), fcda.get("prefix", ""), fcda.get("lnClass"), fcda.get("lnInst", ""),
                             fcda.get("doName"), fcda.get("daName"), fcda.get("fc"),
+                            json.dumps(leaves) if leaves else None,  # None = types unknown, never compared
                         ))
 
         for extref in ied.iter("ExtRef"):
@@ -197,7 +329,7 @@ def parse_scl(file_path: str) -> ParsedSCL:
                 ied_name, pub_ied,
                 extref.get("ldInst"), extref.get("prefix", ""), extref.get("lnClass"), extref.get("lnInst", ""),
                 extref.get("doName"), extref.get("daName"), service_type,
-                extref.get("srcLDInst"), extref.get("srcCBName"),
+                extref.get("srcLDInst"), extref.get("srcCBName"), extref.get("pServT"),
             ))
 
     if not result.ieds:
@@ -227,3 +359,5 @@ def store_parsed(conn, filename: str, parsed: ParsedSCL):
     insert("dataset_members", parsed.dataset_members)
     insert("extrefs", parsed.extrefs)
     insert("vendor_subscriptions", parsed.vendor_subscriptions)
+    insert("vendor_signal_types", parsed.vendor_signal_types)
+    insert("connected_aps", parsed.connected_aps)

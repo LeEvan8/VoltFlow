@@ -6,6 +6,7 @@ Pure read of the database: calling it twice gives the same nodes, edges and erro
 Rule references: IEC 61850-6 Ed2.1 (SCL), IEC 61850-8-1 Ed2 AMD1 (GOOSE mapping),
 IEC 61850-7-1 Ed2.1 Annex H (subscription engineering).
 """
+import json
 import re
 from collections import defaultdict
 
@@ -118,6 +119,16 @@ def analyze(conn):
         if is_auth(v, "sub_ied"):
             vendor_recs[(v["sub_ied"], v["pub_ied"], v["cb_name"])].append(dict(v))
 
+    vendor_types = defaultdict(list)
+    for v in conn.execute("SELECT * FROM vendor_signal_types ORDER BY rowid"):
+        if is_auth(v, "sub_ied"):
+            vendor_types[(v["sub_ied"], v["pub_ied"], v["cb_name"])].append(dict(v))
+
+    subnets_by_file = defaultdict(set)  # (file, ied) -> subnetworks its access points are on
+    for ap in conn.execute("SELECT * FROM connected_aps"):
+        if ap["subnetwork"]:
+            subnets_by_file[(ap["source_file"], ap["ied_name"])].add(ap["subnetwork"])
+
     def vendor_record(sub, cb_key):
         """The subscriber's vendor record for this control block: one naming the same LD, else one naming no LD."""
         recs = vendor_recs[(sub, cb_key[0], cb_key[2])]
@@ -200,9 +211,13 @@ def analyze(conn):
             else:
                 continue  # no service type and not in any GOOSE data set: likely a report/poll input
 
-        record = subscriptions.setdefault((sub, cb_key), {"sub": sub, "cb_key": cb_key, "via": via, "notes": set(), "missing": []})
+        record = subscriptions.setdefault((sub, cb_key), {"sub": sub, "cb_key": cb_key, "via": via, "notes": set(), "missing": [],
+                                                          "service_conflicts": set()})
         if note:
             record["notes"].add(note)
+        # IEC 61850-6 9.3.13: a pServT given by the input template must be met by the engineered service type.
+        if extref["p_serv_t"] and extref["p_serv_t"] != (extref["service_type"] or "GOOSE"):
+            record["service_conflicts"].add((_signal_ref(extref), extref["p_serv_t"]))
         if via == "standard" and (extref["do_name"] or extref["ln_class"]) and not data_in_cb(extref, cb_key):
             record["missing"].append(_signal_ref(extref))
 
@@ -219,7 +234,7 @@ def analyze(conn):
 
     def no_flags():
         return {"rev_mismatch": False, "appid_mismatch": False, "mac_mismatch": False, "goid_mismatch": False,
-                "vlan_mismatch": False, "dataset_mismatch": False, "appid_collision": False}
+                "vlan_mismatch": False, "dataset_mismatch": False, "type_mismatch": False, "appid_collision": False}
 
     def no_expectation():
         return {"sub_rev": None, "sub_appid": None, "sub_mac": None, "sub_vlan": None, "sub_pri": None, "sub_dataset": None,
@@ -250,12 +265,14 @@ def analyze(conn):
             if copy["dataset"] and copy_members:
                 put("dataset", copy["dataset"], src)
                 expected["dataset_members"] = member_seq(copy_members)
+                expected["dataset_types"] = [m["leaf_types"] for m in copy_members]
 
         vendor = vendor_record(sub, cb_key)
         if vendor:
             src = f"{ied_info[sub]['manufacturer'] or 'vendor'} {vendor['record_type']}"
             if vendor["dataset"] and vendor["dataset"] != expected.get("dataset"):
                 expected.pop("dataset_members", None)  # copy's member list belongs to a different data set name
+                expected.pop("dataset_types", None)
             put("conf_rev", vendor["conf_rev"], src)
             put("appid", vendor["appid"], src)
             put("mac", _norm_mac(vendor["mac_address"]), src)
@@ -267,6 +284,38 @@ def analyze(conn):
 
     def member_seq(rows):
         return [tuple(m[k] or "" for k in ("fcda_ld", "prefix", "ln_class", "ln_inst", "do_name", "da_name", "fc")) for m in rows]
+
+    def leaf_type_changes(old_types, new_types):
+        """Attribute type changes between two member lists with the same FCDA sequence.
+        Members whose types are unknown on either side (NULL leaf_types) are not compared."""
+        changes = []
+        for old, new in zip(old_types, new_types):
+            if not old or not new or old == new:
+                continue
+            old_leaves, new_leaves = dict(json.loads(old)), dict(json.loads(new))
+            for path in sorted(set(old_leaves) | set(new_leaves)):
+                before, after = old_leaves.get(path, "absent"), new_leaves.get(path, "absent")
+                if before.upper() != after.upper():
+                    changes.append(f"{path}: {before} → {after}")
+        return changes
+
+    def vendor_type_changes(sub, cb_key):
+        """Signals whose type the subscriber's vendor record declares differently from the publisher's templates."""
+        cb, changes = auth_cbs[cb_key], []
+        for sig in vendor_types[(sub, cb_key[0], cb_key[2])]:
+            if sig["cb_ld"] and sig["cb_ld"] != cb_key[1]:
+                continue
+            signal = {"ld_inst": sig["sig_ld"], "prefix": sig["prefix"], "ln_class": sig["ln_class"],
+                      "ln_inst": sig["ln_inst"], "do_name": sig["do_name"], "da_name": sig["da_name"]}
+            path = sig["do_name"] + (f".{sig['da_name']}" if sig["da_name"] else "")
+            for m in members[(cb_key[0], cb_key[1], cb["dataset"])]:
+                if m["leaf_types"] and _fcda_matches(signal, m, cb_key[1]):
+                    published = dict(json.loads(m["leaf_types"])).get(path)
+                    if published is not None:
+                        if published.upper() != sig["b_type"].upper():
+                            changes.append(f"{path}: publisher sends {published}, '{sub}' expects {sig['b_type']}")
+                        break
+        return sorted(set(changes))
 
     def pub_details(cb):
         return {
@@ -300,7 +349,16 @@ def analyze(conn):
                 "dataset_mismatch": ("dataset_members" in expected and (expected["dataset"], expected["dataset_members"]) != (cb["dataset"], actual_members))
                                     or ("dataset" in expected and expected["dataset"] != cb["dataset"]),
             })
-            record["flags"], record["actual_members"] = flags, actual_members
+            actual_types = [m["leaf_types"] for m in members[(cb_key[0], cb_key[1], cb["dataset"])]]
+            type_changes = []
+            if "dataset_members" in expected and not flags["dataset_mismatch"]:
+                type_changes += [f"{c} (vs {sources['dataset']})" for c in leaf_type_changes(expected["dataset_types"], actual_types)]
+            vendor_changes = vendor_type_changes(sub, cb_key)
+            if vendor_changes:
+                vendor_src = f"{ied_info[sub]['manufacturer'] or 'vendor'} subscription record"
+                type_changes += [f"{c} (from {vendor_src})" for c in vendor_changes]
+            flags["type_mismatch"] = bool(type_changes)
+            record["flags"], record["actual_members"], record["type_changes"] = flags, actual_members, type_changes
             not_declared = [p for p in EXPECTED_PARAMS if p not in expected]
             fully_verified = not any(p in not_declared for p in REQUIRED_FOR_VALID)
             details.update({
@@ -384,6 +442,11 @@ def analyze(conn):
         elif cb["conf_rev"].strip() == "0":
             report(ied, "WARNING", "CONF_REV_ZERO", f"Control block {cb_label(cb_key)} references data set '{cb['dataset']}' but has confRev 0, which is only allowed without a data set.", cb_key)
 
+        if not cb["dataset_found"]:
+            report(ied, "ERROR", "DATASET_NOT_FOUND",
+                   f"Control block {cb_label(cb_key)} references data set '{cb['dataset']}', which does not exist in {cb_key[0]}/{cb_key[1]}/LLN0 "
+                   f"(IEC 61850-6 9.3.10: datSet must be a valid data set reference). Nothing can be published.", cb_key)
+
         if not cb["has_address"]:
             report(ied, "WARNING", "MISSING_GSE_ADDRESS", f"Control block {cb_label(cb_key)} has no GSE address in the Communication section (IEC 61850-8-1 25.3.2).", cb_key)
             continue
@@ -449,6 +512,32 @@ def analyze(conn):
     report_duplicates(lambda c: c["go_id"], "GOID_DUPLICATE", "WARNING",
                       lambda v, k, o: f"GoID (GSEControl appID) '{v}' on {cb_label(k)} is also used by {o}; it should be system-wide unique.")
 
+    # IEC 61850-6 9.3.10: confRev shall be incremented for any change of the data set. Compare every uploaded
+    # copy of each control block; same confRev with a different data set means subscribers cannot detect the change.
+    for cb_key in active_keys:
+        copies = sorted((c for (f, *k), c in cb_copies.items() if tuple(k) == cb_key and c["dataset"]), key=lambda c: file_seq.get(c["source_file"], 0))
+        seen = set()
+        for i, a in enumerate(copies):
+            for b in copies[i + 1:]:
+                if not _same_number(a["conf_rev"], b["conf_rev"]) or (a["source_file"], b["source_file"]) in seen:
+                    continue
+                a_rows = members_by_file[(a["source_file"], *cb_key[:2], a["dataset"])]
+                b_rows = members_by_file[(b["source_file"], *cb_key[:2], b["dataset"])]
+                if not a_rows or not b_rows:
+                    continue  # a copy without its data set content can't be compared
+                if (a["dataset"], member_seq(a_rows)) != (b["dataset"], member_seq(b_rows)):
+                    change = f"data set '{a['dataset']}' ({len(a_rows)} entries) vs '{b['dataset']}' ({len(b_rows)} entries)"                         if a["dataset"] != b["dataset"] else f"{len(a_rows)} vs {len(b_rows)} entries or a different order"
+                else:
+                    type_diff = leaf_type_changes([m["leaf_types"] for m in a_rows], [m["leaf_types"] for m in b_rows])
+                    if not type_diff:
+                        continue
+                    change = "attribute types changed: " + "; ".join(type_diff[:3]) + (" …" if len(type_diff) > 3 else "")
+                seen.add((a["source_file"], b["source_file"]))
+                report(cb_key[0], "ERROR", "CONFREV_NOT_INCREMENTED",
+                       f"{cb_label(cb_key)} has confRev {b['conf_rev']} in both '{a['source_file']}' and '{b['source_file']}', "
+                       f"but the data set differs ({change}). IEC 61850-6 requires confRev to be incremented on any data set change; "
+                       f"subscribers configured against the other version cannot detect it.", cb_key)
+
     for cb_key in active_keys:
         subscribers = {r["sub"] for r in subs_by_cb[cb_key]}
         if not subscribers:
@@ -480,6 +569,15 @@ def analyze(conn):
             report(sub, "ERROR", "FATAL_TYPE_MISMATCH",
                    f"Data set composition of {cb_label(cb_key)} differs from what '{sub}' was configured with ({src('dataset')}): {change}. "
                    f"The byte sequence no longer matches, so the subscriber will drop the payload.", edge_id=edge_id)
+        if flags["type_mismatch"]:
+            changes = record["type_changes"]
+            report(sub, "ERROR", "FATAL_TYPE_MISMATCH",
+                   f"Signal types of {cb_label(cb_key)} differ from what '{sub}' expects: {'; '.join(changes[:4])}{' …' if len(changes) > 4 else ''}. "
+                   f"The subscriber decodes the payload with the wrong types and will drop it.", edge_id=edge_id)
+        for signal, expected_service in sorted(record["service_conflicts"]):
+            report(sub, "ERROR", "SERVICE_TYPE_MISMATCH",
+                   f"Input {signal} of '{sub}' requires service type '{expected_service}' (pServT), but it is bound to GOOSE "
+                   f"from {cb_label(cb_key)} (IEC 61850-6 9.3.13).", edge_id=edge_id)
         if record["missing"]:
             report(sub, "ERROR", "DATASET_MEMBER_MISSING",
                    f"'{sub}' expects {len(record['missing'])} signal(s) from {cb_label(cb_key)} that are not in data set '{cb['dataset']}': {', '.join(sorted(set(record['missing'])))}.",
@@ -509,6 +607,18 @@ def analyze(conn):
             report(sub, "ERROR", "NETWORK_ROUTING_FAIL",
                    f"Layer 2 parameters of {cb_label(cb_key)} do not match what '{sub}' filters on ({src(*routing_params)}): {'; '.join(routing)}. "
                    f"Multicast frames will be dropped.", edge_id=edge_id)
+        # IEC 61850-7-1 Annex H: the subscriber access point must be on the publisher's subnetwork. SubNetwork names
+        # are tool-specific, so only compare within one file that describes both IEDs' communication.
+        for f in dict.fromkeys([auth_file[sub], auth_file[cb_key[0]]]):
+            copy = cb_copies.get((f, *cb_key))
+            pub_subnet, sub_subnets = (copy or {}).get("subnetwork"), subnets_by_file[(f, sub)]
+            if pub_subnet and sub_subnets:
+                if pub_subnet not in sub_subnets:
+                    report(sub, "ERROR", "SUBNETWORK_MISMATCH",
+                           f"In '{f}', {cb_label(cb_key)} is published on subnetwork '{pub_subnet}', but '{sub}' is only connected to "
+                           f"{', '.join(repr(n) for n in sorted(sub_subnets))}. GOOSE is layer 2 and will not reach it (IEC 61850-7-1 Annex H).",
+                           edge_id=edge_id)
+                break
 
     for key in sorted(unresolved):
         entry = unresolved[key]

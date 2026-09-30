@@ -209,9 +209,9 @@ export default function App() {
                         : 'bg-slate-950/40 border-slate-800 hover:border-amber-500/50'
                     }`}
                   >
-                    <div className={`font-bold font-mono flex justify-between items-center ${severityColor}`}>
-                      <span>{err.rule_type}</span>
-                      <span className="text-[10px] text-slate-500 font-sans uppercase">Tap to inspect ➔</span>
+                    <div className={`font-bold font-mono flex justify-between items-start gap-2 ${severityColor}`}>
+                      <span className="break-all">{err.rule_type}</span>
+                      <span className="text-[10px] text-slate-500 font-sans uppercase whitespace-nowrap shrink-0">Tap to inspect ➔</span>
                     </div>
                     <p className="mt-1.5 text-slate-300 leading-relaxed font-sans">{err.message}</p>
                   </div>
@@ -248,7 +248,7 @@ export default function App() {
             const revMismatch = details.flags.rev_mismatch;
             const appidMismatch = details.flags.appid_mismatch;
             const hasAppidCollision = details.flags.appid_collision;
-            const datasetMismatch = details.flags.dataset_mismatch;
+            const datasetMismatch = details.flags.dataset_mismatch || details.flags.type_mismatch;
 
             if (isUnresolved) {
               return (

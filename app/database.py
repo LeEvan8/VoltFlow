@@ -6,7 +6,7 @@ from pathlib import Path
 DB_PATH = os.environ.get("VOLTFLOW_DB", str(Path(__file__).resolve().parent.parent / "voltflow.db"))
 
 # Bump when the schema changes; older databases are dropped and rebuilt (re-upload files).
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 -- One row per uploaded file. seq orders uploads: the latest file containing an IED is its
@@ -41,6 +41,9 @@ CREATE TABLE gse_controls (
     vlan_priority TEXT,
     min_time      TEXT,
     max_time      TEXT,
+    dataset_found INTEGER NOT NULL,  -- datSet names a DataSet that exists in the same LLN0
+    subnetwork    TEXT,              -- SubNetwork of the ConnectedAP holding the GSE address
+    ap_name       TEXT,
     PRIMARY KEY (source_file, ied_name, ld_inst, cb_name)
 );
 
@@ -65,7 +68,8 @@ CREATE TABLE dataset_members (
     ln_inst     TEXT,
     do_name     TEXT,
     da_name     TEXT,
-    fc          TEXT
+    fc          TEXT,
+    leaf_types  TEXT  -- JSON [[path, bType], ...] resolved via DataTypeTemplates; NULL = unknown
 );
 
 -- Bound Inputs/ExtRef elements (IEC 61850-6 9.3.13). Unbound templates (no iedName) are skipped.
@@ -81,7 +85,8 @@ CREATE TABLE extrefs (
     da_name      TEXT,
     service_type TEXT,
     src_ld_inst  TEXT,
-    src_cb_name  TEXT
+    src_cb_name  TEXT,
+    p_serv_t     TEXT  -- expected service type from an input template (pServT)
 );
 
 -- Subscriber-side expectations from vendor records (standard ExtRefs carry none of these values).
@@ -101,9 +106,34 @@ CREATE TABLE vendor_subscriptions (
     go_id         TEXT,
     record_type   TEXT NOT NULL
 );
+
+-- Per-signal expected types from ExtRef companion records (e.g. Schneider bType).
+CREATE TABLE vendor_signal_types (
+    source_file TEXT NOT NULL,
+    sub_ied     TEXT NOT NULL,
+    pub_ied     TEXT NOT NULL,
+    cb_name     TEXT NOT NULL,
+    cb_ld       TEXT,
+    sig_ld      TEXT,
+    prefix      TEXT,
+    ln_class    TEXT,
+    ln_inst     TEXT,
+    do_name     TEXT NOT NULL,
+    da_name     TEXT,
+    b_type      TEXT NOT NULL
+);
+
+-- Communication/SubNetwork/ConnectedAP: which subnetwork each IED access point is on.
+CREATE TABLE connected_aps (
+    source_file TEXT NOT NULL,
+    ied_name    TEXT NOT NULL,
+    ap_name     TEXT,
+    subnetwork  TEXT
+);
 """
 
-DATA_TABLES = ["ieds", "gse_controls", "gse_destinations", "dataset_members", "extrefs", "vendor_subscriptions"]
+DATA_TABLES = ["ieds", "gse_controls", "gse_destinations", "dataset_members", "extrefs", "vendor_subscriptions",
+               "vendor_signal_types", "connected_aps"]
 
 
 def get_db_connection():
