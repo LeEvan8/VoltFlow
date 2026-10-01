@@ -7,6 +7,12 @@ const STATE_STYLE: Record<WireInfo['state'], { label: string; cls: string }> = {
   'ied-silent': { label: 'IED NOT IN CAPTURE', cls: 'bg-slate-900 text-slate-500 border-slate-800' },
 };
 
+function formatOffset(seconds: number) {
+  const sign = seconds >= 0 ? '+' : '−';
+  const abs = Math.abs(seconds);
+  return abs >= 3600 ? `${sign}${(abs / 3600).toFixed(2)} h` : abs >= 60 ? `${sign}${(abs / 60).toFixed(1)} min` : `${sign}${abs.toFixed(3)} s`;
+}
+
 function shortTime(iso: string | null | undefined) {
   return iso ? iso.replace('T', ' ').replace('Z', ' UTC') : '—';
 }
@@ -77,6 +83,10 @@ export default function WireCard({ wire }: { wire: WireInfo }) {
                 <span className="text-slate-300">{t.first_retransmission_ms.length ? `${t.first_retransmission_ms.join(', ')} ms` : '—'} (MinTime {t.min_time_ms ?? '—'} ms)</span></div>
               <div className="flex justify-between"><span className="text-slate-500">timeAllowedToLive</span><span className="text-slate-300">{t.tals_ms.join(', ') || '—'} ms</span></div>
               <div className="flex justify-between"><span className="text-slate-500">State changes (stNum)</span><span className="text-slate-300">{t.events}</span></div>
+              {t.clock_offset_s !== null && (
+                <div className="flex justify-between"><span className="text-slate-500">IED clock vs capture clock</span>
+                  <span className={Math.abs(t.clock_offset_s) > 1 ? 'text-amber-400' : 'text-slate-300'}>{formatOffset(t.clock_offset_s)}</span></div>
+              )}
               <div className="flex justify-between"><span className="text-slate-500">Interruptions / frames lost</span>
                 <span className={t.interruptions || t.frames_lost ? 'text-amber-400' : 'text-slate-300'}>{t.interruptions} / {t.frames_lost}</span></div>
               {wire.simulation && <div className="text-amber-400">Simulation/test flag set</div>}

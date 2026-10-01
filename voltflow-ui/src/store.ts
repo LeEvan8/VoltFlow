@@ -46,6 +46,7 @@ export interface WireInfo {
   timing?: {
     max_steady_gap_ms: number | null; max_gap_ms: number | null; max_time_ms: string | null; min_time_ms: string | null;
     tals_ms: number[]; first_retransmission_ms: number[]; interruptions: number; frames_lost: number; st_resets: number; events: number;
+    clock_offset_s: number | null;  // IED clock minus capture clock, from state changes seen live
   };
   values?: [string, string][];
   value_time?: string | null;

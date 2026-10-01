@@ -14,6 +14,7 @@ P81_L2 = "IEC 61850-8-1 §25.3.2, Table 163 (GOOSE layer 2 addressing)"
 P81_MAC = "IEC 61850-8-1 Annex B (multicast address selection)"
 P81_APPID = "IEC 61850-8-1 Annex C, Table C.2 (APPID type)"
 P81_CONFREV = "IEC 61850-8-1 §18.1.2.5 (SendGOOSEMessage: confRev)"
+P81_SEND = "IEC 61850-8-1 §18.1.2.5 (SendGOOSEMessage)"
 P71_H = "IEC 61850-7-1 Annex H (GOOSE/SMV subscription configuration)"
 
 RULE_REFERENCES = {
@@ -58,17 +59,18 @@ RULE_REFERENCES = {
     "NETWORK_ROUTING_FAIL": f"{P81_L2}; {P81_CONFREV} (goID)",
     "FATAL_TYPE_MISMATCH": f"{P6_DATASET}: FCDA order and types define the message; {P81_CONFREV}",
     # network captures (what the IEDs actually send)
-    "WIRE_CONFIG_MISMATCH": f"{P81_CONFREV}: message fields; {P81_L2}: addresses",
+    "WIRE_CONFIG_MISMATCH": f"{P81_SEND}: message fields; {P81_L2}: addresses",
     "WIRE_SUBSCRIBER_MISMATCH": f"{P81_CONFREV}; {P81_L2}",
     "WIRE_TYPE_MISMATCH": f"IEC 61850-8-1 Annex A, Table A.2 (allData encoding); {P6_DATASET}",
-    "WIRE_STREAM_INTERRUPTED": f"{P81_CONFREV}: timeAllowedToLive and the subscriber state machine (Figure 11)",
-    "WIRE_MAXTIME_EXCEEDED": f"{P81_CONFREV}: retransmission interval up to MaxTime (Figure 8); {P6_GSE_ADDR}",
-    "WIRE_FRAMES_LOST": f"{P81_CONFREV}: sqNum increments with each retransmission",
-    "WIRE_STNUM_RESET": f"{P81_CONFREV}: stNum increments with each state change",
+    "WIRE_STREAM_INTERRUPTED": f"{P81_SEND}: timeAllowedToLive and the subscriber state machine (Figure 11)",
+    "WIRE_MAXTIME_EXCEEDED": f"{P81_SEND}: retransmission interval up to MaxTime (Figure 8); {P6_GSE_ADDR}",
+    "WIRE_FRAMES_LOST": f"{P81_SEND}: sqNum increments with each retransmission",
+    "WIRE_STNUM_RESET": f"{P81_SEND}: stNum increments with each state change",
     "WIRE_SIMULATION": "IEC 61850-8-1 Annex C.2 (S bit) and §18.1.2.5 (simulation); IEC 61850-7-1 §7.8.2",
-    "WIRE_NEEDS_COMMISSIONING": f"{P81_CONFREV}: ndsCom",
-    "WIRE_DUPLICATE_STREAM": f"{P81_CONFREV}: gocbRef identifies one control block",
-    "WIRE_UNKNOWN_STREAM": f"{P81_CONFREV}: gocbRef; not described by any loaded SCL file",
-    "WIRE_NOT_SEEN": f"{P81_CONFREV}: a publisher retransmits at least every MaxTime",
-    "WIRE_IED_SILENT": f"{P81_CONFREV}: a publisher retransmits at least every MaxTime",
+    "WIRE_NEEDS_COMMISSIONING": f"{P81_SEND}: ndsCom",
+    "WIRE_CLOCK_OFFSET": f"{P81_SEND}: T is the time of the last state change; IEC 61850-8-1 §8.1.3.7 (UtcTime)",
+    "WIRE_DUPLICATE_STREAM": f"{P81_SEND}: gocbRef identifies one control block",
+    "WIRE_UNKNOWN_STREAM": f"{P81_SEND}: gocbRef; not described by any loaded SCL file",
+    "WIRE_NOT_SEEN": f"{P81_SEND}: a publisher retransmits at least every MaxTime",
+    "WIRE_IED_SILENT": f"{P81_SEND}: a publisher retransmits at least every MaxTime",
 }

@@ -1,5 +1,6 @@
 """Phase 6a: GOOSE capture decoding, stream analysis and wire-vs-configuration checks."""
 import json
+import os
 
 import pytest
 
@@ -195,10 +196,10 @@ def test_ldname_and_goid_fallback_matching(ws):
     pub = ied("PUB", {"CFG": {"ld_name": "BAY1_CTRL", "datasets": {"DS1": PUB_DATASET}, "gcbs": [gcb("GCB1")]}})
     ws.upload("site.scd", scl(pub, gses=[gse("PUB", "CFG", "GCB1")]))
     load_capture(ws, "a.pcapng", [(T0, goose_frame(gocb_ref="BAY1_CTRL/LLN0$GO$GCB1", dat_set="BAY1_CTRL/LLN0$DS1",
-                                                   go_id=PUB_GOID, all_data=[boolean(True), quality()]))])
+                                                   go_id=PUB_GOID, all_data=[boolean(True), quality()], t=T0))])
     assert wire_rules(ws.analyze()) == []
     load_capture(ws, "b.pcapng", [(T0, goose_frame(gocb_ref="OTHERNAME/LLN0$GO$GCB1", dat_set="BAY1_CTRL/LLN0$DS1",
-                                                   go_id=PUB_GOID, all_data=[boolean(True), quality()]))])
+                                                   go_id=PUB_GOID, all_data=[boolean(True), quality()], t=T0))])
     result = ws.analyze()
     [finding] = [e for e in result["errors"] if e["rule_type"].startswith("WIRE_")]
     assert finding["rule_type"] == "WIRE_CONFIG_MISMATCH" and "gocbRef on wire OTHERNAME/LLN0$GO$GCB1" in finding["message"]
@@ -246,3 +247,44 @@ def test_data_set_shared_by_two_control_blocks_is_stored_once(tmp_path):
     path.write_text(scl(pub), encoding="utf-8")
     from app.parser import parse_scl
     assert len(parse_scl(str(path)).dataset_members) == len(PUB_DATASET)
+
+
+def test_clock_offset_between_ied_and_capture_is_reported_once_per_ied(ws):
+    typed_site(ws)
+    # Relay clock 7.8 h ahead: T in the message (time of the change) vs the time the frame was captured.
+    offset = 7.8 * 3600
+    packets = heartbeat(2) + [(T0 + 3.0, pub_frame(st=2, sq=0, t=T0 + 3.0 + offset)),
+                              (T0 + 3.002, pub_frame(st=2, sq=1, t=T0 + 3.0 + offset))]
+    load_capture(ws, "bench.pcapng", packets)
+    result = ws.analyze()
+    [finding] = [e for e in result["errors"] if e["rule_type"] == "WIRE_CLOCK_OFFSET"]
+    assert finding["ied_name"] == "PUB" and "+7.80 h from the capture clock" in finding["message"]
+    assert the_link(result)["network_details"]["wire"]["timing"]["clock_offset_s"] == pytest.approx(offset, abs=0.01)
+
+
+def test_synchronised_clock_is_not_reported(ws):
+    typed_site(ws)
+    load_capture(ws, "bench.pcapng", heartbeat(2) + [(T0 + 3.0, pub_frame(st=2, sq=0, t=T0 + 3.0004))])
+    assert "WIRE_CLOCK_OFFSET" not in wire_rules(ws.analyze())
+
+
+def test_unknown_stream_in_several_captures_is_one_finding(ws):
+    typed_site(ws)
+    rogue = lambda t: (t, goose_frame(gocb_ref="X/LLN0$GO$R", dat_set="X/LLN0$D", go_id="R", all_data=[boolean(True)], appid=0x0042))
+    load_capture(ws, "a.pcapng", heartbeat(2) + [rogue(T0)])
+    load_capture(ws, "b.pcapng", heartbeat(2) + [rogue(T0 + 1)])
+    [finding] = [e for e in ws.analyze()["errors"] if e["rule_type"] == "WIRE_UNKNOWN_STREAM"]
+    assert "Seen in 'a.pcapng' (1 frames), 'b.pcapng' (1 frames)" in finding["message"]
+
+
+BENCH_DIR = os.environ.get("VOLTFLOW_BENCH_CAPTURES")
+
+
+@pytest.mark.skipif(not BENCH_DIR, reason="set VOLTFLOW_BENCH_CAPTURES to a folder of real bench captures")
+def test_real_bench_captures_decode_without_errors():
+    import glob
+    files = glob.glob(os.path.join(BENCH_DIR, "*.pcap*"))
+    assert files
+    for path in files:
+        summary = summarize_capture(path)
+        assert summary["totals"]["goose_frames"] > 0 and summary["totals"]["decode_errors"] == 0, path

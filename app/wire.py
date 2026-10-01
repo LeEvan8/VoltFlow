@@ -21,6 +21,7 @@ BTYPE_KIND = {
 DBPOS = {"00": "intermediate", "01": "off", "10": "on", "11": "bad-state"}
 QUALITY_VALIDITY = {"00": "good", "01": "invalid", "10": "reserved", "11": "questionable"}
 MAXTIME_TOLERANCE = 1.10  # 10 % allowance for laptop capture timestamp jitter
+CLOCK_OFFSET_LIMIT_S = 1.0  # IED clock vs capture clock; beyond this, event times cannot be lined up reliably
 
 
 def ld_name(cb):
@@ -124,6 +125,19 @@ def wire_analysis(conn, ctx, report):
     seen_ieds = {key[0] for key in matched}
     capture_names = ", ".join(c["name"] for c in captures)
 
+    # Clock offset per publisher IED: for a state change observed live (sqNum 0), T in the message is the time of that
+    # change (IEC 61850-8-1 §18.1.2.5), so T minus the capture timestamp is the IED clock's offset from the capture clock.
+    clock_offsets = {}
+    for key, streams in matched.items():
+        for s in streams:
+            for e in s["events"]:
+                if e["sq_num"] == 0 and e["t"] and e["ts"] is not None:
+                    t = datetime.fromisoformat(e["t"].replace("Z", "+00:00")).timestamp()
+                    clock_offsets.setdefault(key[0], {"key": key, "offsets": []})["offsets"].append(t - e["ts"])
+    for ied, info in clock_offsets.items():
+        offs = sorted(info["offsets"])
+        info["median_s"] = offs[len(offs) // 2]
+
     for key, streams in sorted(matched.items()):
         cb = auth_cbs[key]
         latest_seq = max(s["capture_seq"] for s in streams)
@@ -180,7 +194,8 @@ def wire_analysis(conn, ctx, report):
         timing = {"max_steady_gap_ms": s["max_steady_gap_ms"], "max_gap_ms": s["max_gap_ms"],
                   "max_time_ms": cb["max_time"], "min_time_ms": cb["min_time"], "tals_ms": s["tals_ms"],
                   "first_retransmission_ms": s["first_retransmission_ms"][:5], "interruptions": len(s["tal_violations"]),
-                  "frames_lost": s["sq_gaps"], "st_resets": s["st_resets"], "events": len(s["events"])}
+                  "frames_lost": s["sq_gaps"], "st_resets": s["st_resets"], "events": len(s["events"]),
+                  "clock_offset_s": round(clock_offsets[key[0]]["median_s"], 3) if key[0] in clock_offsets else None}
         if s["tal_violations"]:
             worst = max(s["tal_violations"], key=lambda v: v["gap_ms"] - v["tal_ms"])
             report(key[0], "WARNING", "WIRE_STREAM_INTERRUPTED",
@@ -254,6 +269,23 @@ def wire_analysis(conn, ctx, report):
             edge["network_details"]["wire"] = {**wire_base, "state": state,
                                                "subscriber_checks": [{"field": n, "wire": w, "expected": e, "ok": ok} for n, w, e, ok in rows]}
 
+    def fmt_offset(seconds):
+        sign = "+" if seconds >= 0 else "−"
+        s = abs(seconds)
+        return f"{sign}{s / 3600:.2f} h" if s >= 3600 else f"{sign}{s / 60:.1f} min" if s >= 60 else f"{sign}{s:.2f} s"
+
+    for ied, info in sorted(clock_offsets.items()):
+        if abs(info["median_s"]) <= CLOCK_OFFSET_LIMIT_S:
+            continue
+        others = [f"{other} {fmt_offset(o['median_s'])}" for other, o in sorted(clock_offsets.items()) if other != ied]
+        report(ied, "WARNING", "WIRE_CLOCK_OFFSET",
+               f"Timestamps in GOOSE from {ied} are {fmt_offset(info['median_s'])} from the capture clock "
+               f"(measured on {len(info['offsets'])} state change(s) seen live)"
+               + (f"; other publishers: {', '.join(others)}" if others else "")
+               + ". Event times from this IED cannot be correlated with the others: check its time synchronisation (SNTP/PTP) "
+                 "and time zone setting. The capture laptop's own clock may also be off, so compare the IEDs with each other.",
+               info["key"], mark_edge=False)
+
     # Configured but not observed.
     silent = {}
     for key in ctx["active_keys"]:
@@ -272,11 +304,16 @@ def wire_analysis(conn, ctx, report):
                f"No GOOSE from {ied} ({', '.join(cbs)}) appears in the captures ({capture_names}): the IED was not connected "
                f"to the capture point, not publishing, or the capture was too short.", mark_edge=False)
 
+    # One finding per unknown stream, however many captures it appears in.
+    unknown_streams = {}
     for s in unknown:
-        owner = next((ied for ied in sorted(ctx["ied_info"], key=len, reverse=True) if s["gocb_ref"].startswith(ied)), None)
+        unknown_streams.setdefault((s["gocb_ref"], s["src_mac"], s["dst_mac"], s["appid"]), []).append(s)
+    for (gocb_ref, src_mac, dst_mac, appid), group in sorted(unknown_streams.items()):
+        owner = next((ied for ied in sorted(ctx["ied_info"], key=len, reverse=True) if gocb_ref.startswith(ied)), None)
+        go_ids = sorted({g for s in group for g in s["go_ids"] if g})
+        where = ", ".join(f"'{s['capture']}' ({s['frames']} frames)" for s in group)
         report(owner or "(unknown)", "WARNING", "WIRE_UNKNOWN_STREAM",
-               f"Captured GOOSE stream '{s['gocb_ref']}' (GoID {_joined(s['go_ids'])}, APPID {s['appid']}, MAC {s['dst_mac']}, "
-               f"from {s['src_mac']}, {s['frames']} frames in '{s['capture']}') matches no control block in the loaded files.",
-               target_ied=owner, mark_edge=False)
+               f"Captured GOOSE stream '{gocb_ref}' (GoID {', '.join(go_ids) or '—'}, APPID {appid}, MAC {dst_mac}, from {src_mac}) "
+               f"matches no control block in the loaded files. Seen in {where}.", target_ied=owner, mark_edge=False)
 
     return summaries
