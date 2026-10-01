@@ -22,3 +22,10 @@ npm run build
 
 The local database (voltflow.db) is rebuilt automatically when its schema changes;
 re-upload your SCL files afterwards.
+
+Reports (also available from "Export report" in the UI):
+GET  /api/v1/report.html          printable validation report (print to PDF from the browser)
+GET  /api/v1/report/links.csv     every link with per-parameter results
+GET  /api/v1/report/findings.csv  every finding with its IEC 61850 reference
+POST /api/v1/compare              compare two versions of a file (form fields: before, after;
+                                  ?format=html for a printable page); nothing is stored

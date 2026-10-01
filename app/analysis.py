@@ -10,6 +10,8 @@ import json
 import re
 from collections import defaultdict
 
+from app.rules import RULE_REFERENCES
+
 APPID_RE = re.compile(r"^[0-9A-Fa-f]{4}$")
 MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}[-:]){5}[0-9A-Fa-f]{2}$")
 VLAN_ID_RE = re.compile(r"^[0-9A-Fa-f]{3}$")
@@ -429,15 +431,18 @@ def analyze(conn):
 
     def report(ied, severity, rule, message, cb_key=None, edge_id=None, target_ied=None, color=None):
         """color: what this finding does to the edge; defaults from severity (a green WARNING flags without recolouring)."""
-        mark = (color_rank[color or severity_color[severity]], -len(errors), rule)
+        # mark = (colour rank, specificity, -report order, rule): the edge status is the most severe finding; on equal
+        # colour a finding about the link itself beats one about its whole control block; then the first reported.
+        rank = color_rank[color or severity_color[severity]]
         if cb_key is not None and edge_id is None:
             edge_id = edges_by_cb[cb_key][0] if edges_by_cb.get(cb_key) else None
-            cb_marks[cb_key].append(mark)
+            cb_marks[cb_key].append((rank, 0, -len(errors), rule))
         elif edge_id is not None:
-            edge_marks[edge_id].append(mark)
+            edge_marks[edge_id].append((rank, 1, -len(errors), rule))
         errors.append({
             "id": len(errors) + 1, "ied_name": ied, "severity": severity, "rule_type": rule, "message": message,
             "xpath": f"e-{edge_id}" if edge_id else "", "target_ied": target_ied or ied,
+            "reference": RULE_REFERENCES.get(rule),
         })
 
     def cb_label(key):
@@ -640,7 +645,7 @@ def analyze(conn):
             continue
         marks = edge_marks[edge["id"]] + (cb_marks[edge_cb[edge["id"]]] if edge["id"] in edge_cb else [])
         if marks:
-            rank, _, rule = max(marks)
+            rank, _, _, rule = max(marks)
             edge["color_state"] = ["GREEN", "YELLOW", "RED"][rank]
             edge["status"] = rule
 

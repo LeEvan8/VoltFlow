@@ -3,7 +3,8 @@ import ReactFlow, { Background, Controls } from 'reactflow';
 import type { ReactFlowInstance } from 'reactflow';
 import type { EdgeProps } from 'reactflow'; 
 import 'reactflow/dist/style.css';
-import { useVoltFlowStore } from './store';
+import { API_BASE, useVoltFlowStore } from './store';
+import CompareModal from './CompareModal';
 import type { EdgeFlags, ExpectedParam, ValidationError } from './store';
 
 const PARAM_LABELS: Record<ExpectedParam, string> = {
@@ -167,6 +168,8 @@ export default function App() {
   const [flow, setFlow] = useState<ReactFlowInstance | null>(null);
   const [uploading, setUploading] = useState(false);
   const [layoutVersion, setLayoutVersion] = useState(0);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [compareOpen, setCompareOpen] = useState(false);
 
   useEffect(() => { fetchTopology(); }, [fetchTopology]);
 
@@ -227,12 +230,14 @@ export default function App() {
           <span className="text-[10px] text-slate-500 font-sans uppercase whitespace-nowrap shrink-0">Tap to inspect ➔</span>
         </div>
         <p className="mt-1.5 text-slate-300 leading-relaxed font-sans">{err.message}</p>
+        {err.reference && <p className="mt-1.5 text-[10px] text-slate-500 leading-snug font-sans">{err.reference}</p>}
       </div>
     );
   };
 
   return (
     <div className="w-full h-screen bg-slate-950 text-slate-100 flex flex-col font-sans overflow-hidden select-none">
+      {compareOpen && <CompareModal onClose={() => setCompareOpen(false)} />}
 
       <header className="px-6 py-4 bg-slate-900 border-b border-slate-800 flex justify-between items-center shadow-md z-10">
         <div>
@@ -240,6 +245,26 @@ export default function App() {
           <p className="text-xs text-slate-400 mt-0.5">Brand-Agnostic Substation Grid Interoperability Space</p>
         </div>
         <div className="flex items-center gap-3">
+          <button onClick={() => setCompareOpen(true)} className="px-3 py-1.5 bg-slate-800 text-slate-300 border border-slate-700 text-xs font-semibold rounded-lg cursor-pointer hover:bg-slate-700 transition">⇄ Compare versions</button>
+          <div className="relative">
+            <button onClick={() => setExportOpen(!exportOpen)} disabled={files.length === 0}
+                    className="px-3 py-1.5 bg-slate-800 text-slate-300 border border-slate-700 text-xs font-semibold rounded-lg cursor-pointer hover:bg-slate-700 transition disabled:opacity-40 disabled:cursor-not-allowed">
+              ⬇ Export report ▾
+            </button>
+            {exportOpen && (
+              <div className="absolute right-0 mt-1 w-64 z-30 bg-slate-900 border border-slate-700 rounded-lg shadow-2xl py-1 text-xs" onMouseLeave={() => setExportOpen(false)}>
+                <a href={`${API_BASE}/api/v1/report.html`} target="_blank" rel="noreferrer" onClick={() => setExportOpen(false)} className="block px-3 py-2 text-slate-200 hover:bg-slate-800">
+                  Validation report (HTML)<span className="block text-[10px] text-slate-500">Opens in a new tab; print it to PDF</span>
+                </a>
+                <a href={`${API_BASE}/api/v1/report/links.csv`} onClick={() => setExportOpen(false)} className="block px-3 py-2 text-slate-200 hover:bg-slate-800">
+                  Links (CSV)<span className="block text-[10px] text-slate-500">Every link with per-parameter results</span>
+                </a>
+                <a href={`${API_BASE}/api/v1/report/findings.csv`} onClick={() => setExportOpen(false)} className="block px-3 py-2 text-slate-200 hover:bg-slate-800">
+                  Findings (CSV)<span className="block text-[10px] text-slate-500">With the standard reference of each rule</span>
+                </a>
+              </div>
+            )}
+          </div>
           <button onClick={clearWorkspace} className="px-3 py-1.5 bg-rose-950/40 text-rose-400 border border-rose-900/50 text-xs font-semibold rounded-lg cursor-pointer hover:bg-rose-900/60 transition">🗑 Wipe Screen</button>
           <label className={`px-3 py-1.5 bg-slate-800 text-slate-300 border border-slate-700 text-xs font-semibold rounded-lg transition ${uploading ? 'opacity-60 cursor-wait' : 'cursor-pointer hover:bg-slate-700'}`}>
             <span>{uploading ? '⏳ Uploading…' : '📂 Upload Profiles (.SCD / .CID / .IID)'}</span>

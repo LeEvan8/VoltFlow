@@ -96,6 +96,7 @@ export interface ValidationError {
   message: string;
   xpath: string;
   target_ied: string;
+  reference: string | null;  // clause of the IEC 61850 standard the rule is based on
 }
 
 export interface WorkspaceFile {

@@ -1,14 +1,19 @@
 import logging
 import os
 import shutil
+import tempfile
 from contextlib import asynccontextmanager
+from datetime import date
 from typing import Optional
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 from app.database import init_db, get_db_connection, clear_all, remove_file
 from app.parser import parse_scl, store_parsed, SCLParseError
 from app.analysis import analyze
+from app.report import build_report, render_html, links_csv, findings_csv
+from app.compare import compare_scl, render_compare_html
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("voltflow")
@@ -142,6 +147,60 @@ def set_ied_source(ied_name: str, body: IedSource):
         conn.close()
     logger.info("Authoritative file for %s: %s", ied_name, body.source_file or "latest upload")
     return {"ied": ied_name, "source_file": body.source_file}
+
+
+def _report():
+    conn = get_db_connection()
+    try:
+        return build_report(conn)
+    finally:
+        conn.close()
+
+
+@app.get("/api/v1/report.html", response_class=HTMLResponse)
+def report_html():
+    """Printable validation report (open in a browser and print to PDF)."""
+    return HTMLResponse(render_html(_report()))
+
+
+def _csv_download(content, name):
+    filename = f"voltflow-{name}-{date.today().isoformat()}.csv"
+    return Response(content, media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@app.get("/api/v1/report/links.csv")
+def report_links_csv():
+    return _csv_download(links_csv(_report()), "links")
+
+
+@app.get("/api/v1/report/findings.csv")
+def report_findings_csv():
+    return _csv_download(findings_csv(_report()), "findings")
+
+
+@app.post("/api/v1/compare")
+async def compare_versions(before: UploadFile = File(...), after: UploadFile = File(...), format: str = "json"):
+    """Compare two versions of a project file. Nothing is stored; the workspace is not touched."""
+    if format not in ("json", "html"):
+        raise HTTPException(status_code=400, detail="format must be 'json' or 'html'.")
+    parsed, names = [], []
+    with tempfile.TemporaryDirectory() as tmp:
+        for role, upload in (("before", before), ("after", after)):
+            name = os.path.basename(upload.filename or "")
+            if not name.lower().endswith(ALLOWED_EXTENSIONS):
+                raise HTTPException(status_code=400, detail=f"{role} file '{name}': unsupported file format.")
+            path = os.path.join(tmp, f"{role}_{name}")
+            with open(path, "wb") as f:
+                f.write(await upload.read())
+            try:
+                parsed.append(parse_scl(path))
+            except SCLParseError as e:
+                raise HTTPException(status_code=422, detail=f"{role} file '{name}': {e}")
+            names.append(name)
+    diff = compare_scl(parsed[0], parsed[1], names[0], names[1])
+    logger.info("Compared %s -> %s: %s", names[0], names[1], diff["summary"])
+    return HTMLResponse(render_compare_html(diff)) if format == "html" else diff
 
 
 @app.delete("/api/v1/reset")
