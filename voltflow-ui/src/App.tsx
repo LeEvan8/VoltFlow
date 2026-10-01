@@ -5,6 +5,7 @@ import type { EdgeProps } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { API_BASE, useVoltFlowStore } from './store';
 import CompareModal from './CompareModal';
+import WireCard from './WireCard';
 import type { EdgeFlags, ExpectedParam, ValidationError } from './store';
 
 const PARAM_LABELS: Record<ExpectedParam, string> = {
@@ -24,6 +25,7 @@ function CustomDirectionalWire({
   const idx = data?.edge_index || 0;
   const isOrphanStub = data?.is_orphan_stub;
   const isUnresolvedStub = data?.is_unresolved_stub;
+  const wireState = data?.network_details?.wire?.state;
   const isSelfLoop = data?.is_self_loop || (sourceX === targetX && sourceY === targetY);
 
   let pathString = "";
@@ -131,6 +133,11 @@ function CustomDirectionalWire({
       {danglingOrigin && (
         <circle cx={danglingOrigin.x} cy={danglingOrigin.y} r={5} fill="#020617" stroke={strokeColor} strokeWidth={2} style={{ cursor: 'pointer' }} />
       )}
+
+      {/* Network capture badge: seen & matching (green), seen & differing (red), configured but not seen (hollow). */}
+      {wireState === 'ok' && <circle cx={midX + 12} cy={midY - 12} r={4.5} fill="#22c55e" stroke="#020617" strokeWidth={1.5} />}
+      {wireState === 'mismatch' && <circle cx={midX + 12} cy={midY - 12} r={4.5} fill="#ef4444" stroke="#020617" strokeWidth={1.5} />}
+      {wireState === 'not-seen' && <circle cx={midX + 12} cy={midY - 12} r={4} fill="#020617" stroke="#94a3b8" strokeWidth={1.5} />}
     </>
   );
 }
@@ -157,7 +164,7 @@ function LegendLine({ color, dashed, label }: { color: string; dashed?: boolean;
 
 export default function App() {
   const {
-    nodes, edges, errors, files, selectedIED, selectedEdgeId, fetchTopology, uploadFiles, removeFile, setIedSource,
+    nodes, edges, errors, files, captures, selectedIED, selectedEdgeId, fetchTopology, uploadFiles, removeFile, removeCapture, setIedSource,
     onNodesChange, relayout, setSelectedIED, setSelectedEdgeId, clearWorkspace,
   } = useVoltFlowStore();
   const [expandedSignal, setExpandedSignal] = useState<string | null>(null);
@@ -267,8 +274,8 @@ export default function App() {
           </div>
           <button onClick={clearWorkspace} className="px-3 py-1.5 bg-rose-950/40 text-rose-400 border border-rose-900/50 text-xs font-semibold rounded-lg cursor-pointer hover:bg-rose-900/60 transition">🗑 Wipe Screen</button>
           <label className={`px-3 py-1.5 bg-slate-800 text-slate-300 border border-slate-700 text-xs font-semibold rounded-lg transition ${uploading ? 'opacity-60 cursor-wait' : 'cursor-pointer hover:bg-slate-700'}`}>
-            <span>{uploading ? '⏳ Uploading…' : '📂 Upload Profiles (.SCD / .CID / .IID)'}</span>
-            <input type="file" multiple accept=".scd,.cid,.iid,.icd,.ssd,.sed,.xml" onChange={handleUiFileUpload} disabled={uploading} className="hidden" />
+            <span>{uploading ? '⏳ Uploading…' : '📂 Upload SCL / Captures'}</span>
+            <input type="file" multiple accept=".scd,.cid,.iid,.icd,.ssd,.sed,.xml,.pcap,.pcapng,.cap" onChange={handleUiFileUpload} disabled={uploading} className="hidden" />
           </label>
         </div>
       </header>
@@ -295,6 +302,24 @@ export default function App() {
                     <button onClick={() => handleRemoveFile(f.name)} title={`Remove ${f.name}`} className="text-slate-500 hover:text-rose-400 cursor-pointer shrink-0 px-1">✕</button>
                   </div>
                 ))}
+                {captures.length > 0 && (
+                  <div className="pt-1.5 space-y-1.5">
+                    <div className="text-[10px] uppercase tracking-wider text-slate-500">Network captures</div>
+                    {captures.map(c => (
+                      <div key={c.name} className="flex items-start justify-between gap-2 text-[11px] font-mono bg-sky-950/20 border border-sky-900/40 rounded-lg px-2.5 py-1.5">
+                        <div className="min-w-0">
+                          <div className="text-slate-300 break-all">📡 {c.name}</div>
+                          <div className="text-slate-500 text-[10px]">
+                            {c.goose_frames} GOOSE frames · {c.streams} stream(s){c.duration_s !== null ? ` · ${c.duration_s} s` : ''}
+                            {c.decode_errors > 0 ? ` · ${c.decode_errors} undecodable` : ''}
+                          </div>
+                        </div>
+                        <button onClick={() => { if (confirm(`Remove capture ${c.name}?`)) removeCapture(c.name); }} title={`Remove ${c.name}`}
+                                className="text-slate-500 hover:text-rose-400 cursor-pointer shrink-0 px-1">✕</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -382,6 +407,13 @@ export default function App() {
               <LegendLine color="#ef4444" label="Error (routing, type, data set…)" />
               <LegendLine color="#f59e0b" label="Orphaned stream (0 listeners)" />
               <LegendLine color="#eab308" dashed label="Unresolved source (missing)" />
+              {captures.length > 0 && (
+                <div className="pt-1 space-y-1">
+                  <div className="flex items-center gap-2"><svg width="26" height="10"><circle cx="13" cy="5" r="4" fill="#22c55e" stroke="#020617" strokeWidth="1.5" /></svg><span>Seen on wire, matches</span></div>
+                  <div className="flex items-center gap-2"><svg width="26" height="10"><circle cx="13" cy="5" r="4" fill="#ef4444" stroke="#020617" strokeWidth="1.5" /></svg><span>Seen on wire, differs</span></div>
+                  <div className="flex items-center gap-2"><svg width="26" height="10"><circle cx="13" cy="5" r="3.5" fill="#020617" stroke="#94a3b8" strokeWidth="1.5" /></svg><span>Configured, not seen</span></div>
+                </div>
+              )}
               <div className="pt-1 text-slate-500 font-sans">Drag IEDs to move them; Auto layout resets.</div>
             </div>
           )}
@@ -519,6 +551,7 @@ export default function App() {
                     </div>
                   </div>
                 </div>
+                {details.wire && <WireCard wire={details.wire} />}
               </div>
             );
           })() : selectedIED ? (

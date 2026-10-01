@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import shutil
@@ -14,6 +15,7 @@ from app.parser import parse_scl, store_parsed, SCLParseError
 from app.analysis import analyze
 from app.report import build_report, render_html, links_csv, findings_csv
 from app.compare import compare_scl, render_compare_html
+from app.goose import summarize_capture, CaptureError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("voltflow")
@@ -147,6 +149,59 @@ def set_ied_source(ied_name: str, body: IedSource):
         conn.close()
     logger.info("Authoritative file for %s: %s", ied_name, body.source_file or "latest upload")
     return {"ied": ied_name, "source_file": body.source_file}
+
+
+CAPTURE_EXTENSIONS = (".pcap", ".pcapng", ".cap")
+
+
+@app.post("/api/v1/captures")
+async def upload_capture(file: UploadFile = File(...)):
+    """Read a Wireshark capture, summarise its GOOSE streams and keep only the summary (not the raw packets)."""
+    name = os.path.basename(file.filename or "")
+    if not name.lower().endswith(CAPTURE_EXTENSIONS):
+        raise HTTPException(status_code=400, detail="Captures must be .pcap or .pcapng files.")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "capture")
+        with open(path, "wb") as f:
+            while chunk := await file.read(1 << 20):
+                f.write(chunk)
+        try:
+            summary = summarize_capture(path)
+        except CaptureError as e:
+            logger.warning("Rejected capture %s: %s", name, e)
+            raise HTTPException(status_code=422, detail=f"{name}: {e}")
+    totals = summary["totals"]
+    if totals["goose_frames"] == 0:
+        raise HTTPException(status_code=422, detail=f"{name}: no GOOSE frames (EtherType 0x88B8) in {totals['frames']} packets. "
+                                                    f"Capture on the wired port connected to the station bus, e.g. with the filter 'ether proto 0x88b8'.")
+    conn = get_db_connection()
+    try:
+        seq = conn.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM captures").fetchone()[0]
+        conn.execute("INSERT OR REPLACE INTO captures (name, seq, summary_json) VALUES (?, ?, ?)", (name, seq, json.dumps(summary)))
+        conn.commit()
+    finally:
+        conn.close()
+    logger.info("Accepted capture %s: %d packets, %d GOOSE frames, %d streams, %d undecodable",
+                name, totals["frames"], totals["goose_frames"], len(summary["streams"]), totals["decode_errors"])
+    return {"status": "SUCCESS", "capture": name, "goose_frames": totals["goose_frames"], "streams": len(summary["streams"])}
+
+
+@app.get("/api/v1/captures")
+def list_captures():
+    return _analysis()["captures"]
+
+
+@app.delete("/api/v1/captures/{name}")
+def delete_capture(name: str):
+    conn = get_db_connection()
+    try:
+        if not conn.execute("DELETE FROM captures WHERE name = ?", (os.path.basename(name),)).rowcount:
+            raise HTTPException(status_code=404, detail=f"{name} is not loaded.")
+        conn.commit()
+    finally:
+        conn.close()
+    logger.info("Removed capture %s", name)
+    return {"status": "REMOVED", "capture": name}
 
 
 def _report():

@@ -6,7 +6,7 @@ from pathlib import Path
 DB_PATH = os.environ.get("VOLTFLOW_DB", str(Path(__file__).resolve().parent.parent / "voltflow.db"))
 
 # Bump when the schema changes; older databases are dropped and rebuilt (re-upload files).
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA = """
 -- One row per uploaded file. seq orders uploads: the latest file containing an IED is its
@@ -44,6 +44,7 @@ CREATE TABLE gse_controls (
     dataset_found INTEGER NOT NULL,  -- datSet names a DataSet that exists in the same LLN0
     subnetwork    TEXT,              -- SubNetwork of the ConnectedAP holding the GSE address
     ap_name       TEXT,
+    ld_name       TEXT,              -- LDevice@ldName if set; otherwise the LD name is IED name + ldInst
     PRIMARY KEY (source_file, ied_name, ld_inst, cb_name)
 );
 
@@ -123,6 +124,13 @@ CREATE TABLE vendor_signal_types (
     b_type      TEXT NOT NULL
 );
 
+-- Network captures (pcap/pcapng) summarised per GOOSE stream; compared against the SCL at analysis time.
+CREATE TABLE captures (
+    name         TEXT PRIMARY KEY,
+    seq          INTEGER NOT NULL,
+    summary_json TEXT NOT NULL
+);
+
 -- User's choice of which uploaded file is authoritative for an IED (overrides "latest upload wins").
 CREATE TABLE ied_sources (
     ied_name    TEXT PRIMARY KEY,
@@ -164,7 +172,7 @@ def init_db():
 
 
 def clear_all(conn):
-    for table in ["files", "ied_sources", *DATA_TABLES]:
+    for table in ["files", "ied_sources", "captures", *DATA_TABLES]:
         conn.execute(f"DELETE FROM {table}")
 
 

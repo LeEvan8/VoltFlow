@@ -33,7 +33,8 @@ def ied(name, lds, extrefs=(), vendor_xml="", extra_ld_xml=""):
             dests = "".join(f"<IEDName>{d}</IEDName>" for d in g["dests"])
             inner = dests + g.get("inner", "")
             gcbs += f'<GSEControl {_attrs({k: v for k, v in g.items() if k not in ("dests", "inner")})}>{inner}</GSEControl>'
-        ld_xml.append(f'<LDevice inst="{ld_inst}"><LN0 lnClass="LLN0" inst="" lnType="T">{datasets}{gcbs}</LN0></LDevice>')
+        ld_name = f' ldName="{ld["ld_name"]}"' if ld.get("ld_name") else ""
+        ld_xml.append(f'<LDevice inst="{ld_inst}"{ld_name}><LN0 lnClass="LLN0" inst="" lnType="T">{datasets}{gcbs}</LN0></LDevice>')
     inputs = ""
     if extrefs:
         inputs = '<LN lnClass="GGIO" inst="1" lnType="T"><Inputs>' + "".join(f"<ExtRef {_attrs(e)}/>" for e in extrefs) + "</Inputs></LN>"

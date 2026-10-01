@@ -27,6 +27,42 @@ export interface UnusedControlBlock {
   reason: string;
 }
 
+export interface WireField { field: string; wire: string | null; configured: string | null; ok: boolean }
+export interface WireSubscriberCheck { field: string; wire: string | null; expected: string | null; ok: boolean }
+export interface WireInfo {
+  state: 'ok' | 'mismatch' | 'not-seen' | 'ied-silent';
+  // present when the stream was seen
+  capture?: string;
+  matched_via?: 'gocbRef' | 'GoID';
+  frames?: number;
+  first_seen?: string | null;
+  last_seen?: string | null;
+  src_mac?: string;
+  vlan_visible?: boolean;
+  simulation?: boolean;
+  fields?: WireField[];
+  subscriber_checks?: WireSubscriberCheck[];
+  type_problems?: string[];
+  timing?: {
+    max_steady_gap_ms: number | null; max_gap_ms: number | null; max_time_ms: string | null; min_time_ms: string | null;
+    tals_ms: number[]; first_retransmission_ms: number[]; interruptions: number; frames_lost: number; st_resets: number; events: number;
+  };
+  values?: [string, string][];
+  value_time?: string | null;
+}
+
+export interface CaptureSummary {
+  name: string;
+  order: number;
+  frames: number;
+  goose_frames: number;
+  decode_errors: number;
+  streams: number;
+  start: string | null;
+  end: string | null;
+  duration_s: number | null;
+}
+
 export type ExpectedParam = 'conf_rev' | 'appid' | 'mac' | 'go_id' | 'dataset' | 'vlan_id' | 'vlan_priority';
 
 export interface EdgeFlags {
@@ -82,6 +118,7 @@ export interface GOOSEControlDetails {
       expected_sources: Partial<Record<ExpectedParam, string>>;
       not_declared: ExpectedParam[];
       fully_verified: boolean;
+      wire: WireInfo | null;  // what a loaded network capture shows for this control block (null: no capture)
       match_method: 'standard' | 'dataset' | null;
       flags: EdgeFlags;
     };
@@ -118,6 +155,7 @@ interface VoltFlowUIState {
   edges: GOOSEControlDetails[];
   errors: ValidationError[];
   files: WorkspaceFile[];
+  captures: CaptureSummary[];
   manualPositions: Record<string, Position>;  // nodes the user dragged keep their place across refreshes
   selectedIED: string | null;
   selectedEdgeId: string | null;
@@ -125,6 +163,7 @@ interface VoltFlowUIState {
   fetchTopology: () => Promise<void>;
   uploadFiles: (files: File[]) => Promise<UploadResult[]>;
   removeFile: (name: string) => Promise<void>;
+  removeCapture: (name: string) => Promise<void>;
   setIedSource: (ied: string, sourceFile: string | null) => Promise<void>;
   onNodesChange: (changes: NodeChange[]) => void;
   relayout: () => Promise<void>;
@@ -143,6 +182,7 @@ export const useVoltFlowStore = create<VoltFlowUIState>((set, get) => ({
   edges: [],
   errors: [],
   files: [],
+  captures: [],
   manualPositions: {},
   selectedIED: null,
   selectedEdgeId: null,
@@ -151,13 +191,14 @@ export const useVoltFlowStore = create<VoltFlowUIState>((set, get) => ({
   fetchTopology: async () => {
     set({ loading: true });
     try {
-      const [graphRes, errRes, filesRes] = await Promise.all([
+      const [graphRes, errRes, filesRes, capRes] = await Promise.all([
         fetch(`${API_BASE}/api/v1/graph-data`),
         fetch(`${API_BASE}/api/v1/errors`),
         fetch(`${API_BASE}/api/v1/files`),
+        fetch(`${API_BASE}/api/v1/captures`),
       ]);
-      if (!graphRes.ok || !errRes.ok || !filesRes.ok) throw new Error("Backend infrastructure offline");
-      const [data, errorsData, filesData] = await Promise.all([graphRes.json(), errRes.json(), filesRes.json()]);
+      if (!graphRes.ok || !errRes.ok || !filesRes.ok || !capRes.ok) throw new Error("Backend infrastructure offline");
+      const [data, errorsData, filesData, capData] = await Promise.all([graphRes.json(), errRes.json(), filesRes.json(), capRes.json()]);
 
       const mappedWires: GOOSEControlDetails[] = data.edges.map((edge: any) => ({
         id: `e-${edge.id}`,
@@ -190,7 +231,7 @@ export const useVoltFlowStore = create<VoltFlowUIState>((set, get) => ({
       }));
 
       set({
-        nodes: arrangedNodes, edges: mappedWires, errors: errorsData, files: filesData,
+        nodes: arrangedNodes, edges: mappedWires, errors: errorsData, files: filesData, captures: capData,
         // drop selections that no longer exist (e.g. after removing a file)
         selectedIED: arrangedNodes.some(n => n.id === selectedIED) ? selectedIED : null,
         selectedEdgeId: mappedWires.some(e => e.id === selectedEdgeId) ? selectedEdgeId : null,
@@ -208,8 +249,10 @@ export const useVoltFlowStore = create<VoltFlowUIState>((set, get) => ({
     for (const file of files) {
       const formData = new FormData();
       formData.append('file', file);
+      // Wireshark captures go to the capture endpoint; everything else is an SCL file.
+      const endpoint = /\.(pcap|pcapng|cap)$/i.test(file.name) ? 'captures' : 'upload';
       try {
-        const res = await fetch(`${API_BASE}/api/v1/upload`, { method: 'POST', body: formData });
+        const res = await fetch(`${API_BASE}/api/v1/${endpoint}`, { method: 'POST', body: formData });
         results.push(res.ok
           ? { file: file.name, ok: true, message: 'uploaded' }
           : { file: file.name, ok: false, message: await errorDetail(res) });
@@ -227,6 +270,17 @@ export const useVoltFlowStore = create<VoltFlowUIState>((set, get) => ({
       if (!res.ok) throw new Error(await errorDetail(res));
     } catch (err) {
       console.error("[File Removal Error]", err);
+      alert(`Could not remove ${name}: ${err instanceof Error ? err.message : err}`);
+    }
+    await get().fetchTopology();
+  },
+
+  removeCapture: async (name) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/captures/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(await errorDetail(res));
+    } catch (err) {
+      console.error("[Capture Removal Error]", err);
       alert(`Could not remove ${name}: ${err instanceof Error ? err.message : err}`);
     }
     await get().fetchTopology();
@@ -266,7 +320,7 @@ export const useVoltFlowStore = create<VoltFlowUIState>((set, get) => ({
   clearWorkspace: async () => {
     try {
       await fetch(`${API_BASE}/api/v1/reset`, { method: 'DELETE' });
-      set({ nodes: [], edges: [], errors: [], files: [], manualPositions: {}, selectedIED: null, selectedEdgeId: null });
+      set({ nodes: [], edges: [], errors: [], files: [], captures: [], manualPositions: {}, selectedIED: null, selectedEdgeId: null });
     } catch (err) {
       console.error("[Workspace Reset Error]", err);
     }

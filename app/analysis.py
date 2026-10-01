@@ -429,15 +429,17 @@ def analyze(conn):
     color_rank = {"GREEN": 0, "YELLOW": 1, "RED": 2}
     severity_color = {"ERROR": "RED", "WARNING": "YELLOW", "INFO": "GREEN"}
 
-    def report(ied, severity, rule, message, cb_key=None, edge_id=None, target_ied=None, color=None):
-        """color: what this finding does to the edge; defaults from severity (a green WARNING flags without recolouring)."""
+    def report(ied, severity, rule, message, cb_key=None, edge_id=None, target_ied=None, color=None, mark_edge=True):
+        """color: what this finding does to the edge; defaults from severity (a green WARNING flags without recolouring).
+        mark_edge=False lists the finding (and links it to the edge for navigation) without affecting colour or status."""
         # mark = (colour rank, specificity, -report order, rule): the edge status is the most severe finding; on equal
         # colour a finding about the link itself beats one about its whole control block; then the first reported.
         rank = color_rank[color or severity_color[severity]]
         if cb_key is not None and edge_id is None:
             edge_id = edges_by_cb[cb_key][0] if edges_by_cb.get(cb_key) else None
-            cb_marks[cb_key].append((rank, 0, -len(errors), rule))
-        elif edge_id is not None:
+            if mark_edge:
+                cb_marks[cb_key].append((rank, 0, -len(errors), rule))
+        elif edge_id is not None and mark_edge:
             edge_marks[edge_id].append((rank, 1, -len(errors), rule))
         errors.append({
             "id": len(errors) + 1, "ied_name": ied, "severity": severity, "rule_type": rule, "message": message,
@@ -650,6 +652,19 @@ def analyze(conn):
             edge["status"] = rule
 
     # ---------------------------------------------------------------------
+    # Network captures: what the IEDs actually send, compared with the configuration
+    # ---------------------------------------------------------------------
+    from app.wire import wire_analysis  # imported here: app.wire builds on helpers in this module
+
+    captures = wire_analysis(conn, {
+        "auth_cbs": auth_cbs, "active_keys": active_keys, "members": members, "subs_by_cb": subs_by_cb,
+        "edge_of_sub": edge_of_sub, "edges": edges, "edges_by_cb": edges_by_cb, "ied_info": ied_info,
+        "auth_file": auth_file, "cb_label": cb_label,
+    }, report)
+    for edge in edges:
+        edge["network_details"].setdefault("wire", None)
+
+    # ---------------------------------------------------------------------
     # Nodes
     # ---------------------------------------------------------------------
     nodes = []
@@ -662,4 +677,4 @@ def analyze(conn):
                       # every uploaded file containing this IED, newest first
                       "copies": sorted(ied_files[name], key=lambda f: -file_seq.get(f, 0)), "unused_cbs": unused})
 
-    return {"nodes": nodes, "edges": edges, "errors": errors}
+    return {"nodes": nodes, "edges": edges, "errors": errors, "captures": captures}

@@ -281,10 +281,12 @@ def parse_scl(file_path: str) -> ParsedSCL:
 
         for ldevice in ied.iter("LDevice"):
             ld_inst = ldevice.get("inst", "")
+            ld_name = ldevice.get("ldName") or None
             ln0 = ldevice.find("LN0")
             if ln0 is None:
                 continue
             datasets = {ds.get("name"): ds for ds in ln0.findall("DataSet")}
+            stored_datasets = set()  # several control blocks may share one data set: store its members once
 
             # GSE control blocks are only allowed in LLN0 (IEC 61850-6 9.3.10).
             for gcb in ln0.findall("GSEControl"):
@@ -299,12 +301,13 @@ def parse_scl(file_path: str) -> ParsedSCL:
                     1 if gse is not None else 0,
                     addr.get("MAC-Address"), addr.get("APPID"), addr.get("VLAN-ID"), addr.get("VLAN-PRIORITY"),
                     min_time, max_time,
-                    1 if dataset in datasets else 0, subnet, ap_name,
+                    1 if dataset in datasets else 0, subnet, ap_name, ld_name,
                 ))
                 for dest in gcb.findall("IEDName"):
                     if _text(dest):
                         result.gse_destinations.append((ied_name, ld_inst, cb_name, _text(dest)))
-                if dataset and dataset in datasets:
+                if dataset and dataset in datasets and dataset not in stored_datasets:
+                    stored_datasets.add(dataset)
                     for fcda in datasets[dataset].findall("FCDA"):
                         leaves = resolve_leaf_types(types, ln_types, fcda.get("ldInst") or ld_inst, fcda.get("prefix", ""),
                                                     fcda.get("lnClass"), fcda.get("lnInst", ""), fcda.get("doName"),

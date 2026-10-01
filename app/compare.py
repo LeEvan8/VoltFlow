@@ -7,7 +7,7 @@ from app.rules import RULE_REFERENCES
 
 # Column order of ParsedSCL tuples (see app.parser.parse_scl).
 GCB_FIELDS = ["ied", "ld", "cb", "cb_type", "dataset", "conf_rev", "go_id", "has_address", "mac", "appid", "vlan_id",
-              "vlan_priority", "min_time", "max_time", "dataset_found", "subnetwork", "ap_name"]
+              "vlan_priority", "min_time", "max_time", "dataset_found", "subnetwork", "ap_name", "ld_name"]
 MEMBER_FIELDS = ["ied", "ld", "dataset", "fcda_ld", "prefix", "ln_class", "ln_inst", "do_name", "da_name", "fc", "leaf_types"]
 EXTREF_FIELDS = ["sub", "pub", "ld", "prefix", "ln_class", "ln_inst", "do_name", "da_name", "service_type", "src_ld", "src_cb", "p_serv_t"]
 

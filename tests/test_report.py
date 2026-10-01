@@ -20,7 +20,7 @@ APP = Path(__file__).resolve().parent.parent / "app"
 # --- references ---------------------------------------------------------------------------------
 
 def test_every_rule_the_engine_can_emit_has_a_standard_reference():
-    source = (APP / "analysis.py").read_text(encoding="utf-8") + (APP / "compare.py").read_text(encoding="utf-8")
+    source = "".join((APP / f).read_text(encoding="utf-8") for f in ("analysis.py", "compare.py", "wire.py"))
     emitted = set(re.findall(r'"(?:ERROR|WARNING|INFO)",\s*"([A-Z][A-Z_]{4,})"', source))
     emitted |= set(re.findall(r'add_unresolved\(extref,\s*"([A-Z_]+)"', source))
     emitted |= set(re.findall(r'"(APPID_COLLISION|MULTICAST_MAC_DUPLICATE|GOID_DUPLICATE)"', source))

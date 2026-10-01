@@ -57,4 +57,18 @@ RULE_REFERENCES = {
     "CONFREV_DESYNC": P81_CONFREV,
     "NETWORK_ROUTING_FAIL": f"{P81_L2}; {P81_CONFREV} (goID)",
     "FATAL_TYPE_MISMATCH": f"{P6_DATASET}: FCDA order and types define the message; {P81_CONFREV}",
+    # network captures (what the IEDs actually send)
+    "WIRE_CONFIG_MISMATCH": f"{P81_CONFREV}: message fields; {P81_L2}: addresses",
+    "WIRE_SUBSCRIBER_MISMATCH": f"{P81_CONFREV}; {P81_L2}",
+    "WIRE_TYPE_MISMATCH": f"IEC 61850-8-1 Annex A, Table A.2 (allData encoding); {P6_DATASET}",
+    "WIRE_STREAM_INTERRUPTED": f"{P81_CONFREV}: timeAllowedToLive and the subscriber state machine (Figure 11)",
+    "WIRE_MAXTIME_EXCEEDED": f"{P81_CONFREV}: retransmission interval up to MaxTime (Figure 8); {P6_GSE_ADDR}",
+    "WIRE_FRAMES_LOST": f"{P81_CONFREV}: sqNum increments with each retransmission",
+    "WIRE_STNUM_RESET": f"{P81_CONFREV}: stNum increments with each state change",
+    "WIRE_SIMULATION": "IEC 61850-8-1 Annex C.2 (S bit) and §18.1.2.5 (simulation); IEC 61850-7-1 §7.8.2",
+    "WIRE_NEEDS_COMMISSIONING": f"{P81_CONFREV}: ndsCom",
+    "WIRE_DUPLICATE_STREAM": f"{P81_CONFREV}: gocbRef identifies one control block",
+    "WIRE_UNKNOWN_STREAM": f"{P81_CONFREV}: gocbRef; not described by any loaded SCL file",
+    "WIRE_NOT_SEEN": f"{P81_CONFREV}: a publisher retransmits at least every MaxTime",
+    "WIRE_IED_SILENT": f"{P81_CONFREV}: a publisher retransmits at least every MaxTime",
 }
