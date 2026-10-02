@@ -1,256 +1,273 @@
+import json
+import logging
 import os
 import shutil
-import sqlite3
+import tempfile
+from contextlib import asynccontextmanager
+from datetime import date
+from typing import Optional
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from app.database import init_db, get_db_connection
-from app.parser import parse_and_validate_scl
+from fastapi.responses import HTMLResponse, Response
+from pydantic import BaseModel
+from app.database import init_db, get_db_connection, clear_all, remove_file
+from app.parser import parse_scl, store_parsed, SCLParseError
+from app.analysis import analyze
+from app.report import build_report, render_html, links_csv, findings_csv
+from app.compare import compare_scl, render_compare_html
+from app.goose import summarize_capture, CaptureError
 
-app = FastAPI(title="VoltFlow Core Matrix Engine")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger("voltflow")
+
+# Override with VOLTFLOW_UPLOAD_DIR (e.g. for test runs) so the working uploads folder is never touched.
+UPLOAD_DIR = os.environ.get("VOLTFLOW_UPLOAD_DIR",
+                            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "uploaded_files"))
+ALLOWED_EXTENSIONS = ('.scd', '.cid', '.iid', '.icd', '.ssd', '.sed', '.xml')
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    init_db()
+    yield
+
+
+app = FastAPI(title="VoltFlow Core Matrix Engine", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-UPLOAD_DIR = "uploaded_files"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-@app.on_event("startup")
-def startup():
-    init_db()
 
 @app.post("/api/v1/upload")
 async def upload_scl_file(file: UploadFile = File(...)):
-    if not file.filename.lower().endswith(('.scd', '.cid', '.iid', '.icd', '.xml')):
+    filename = os.path.basename(file.filename or "")
+    if not filename.lower().endswith(ALLOWED_EXTENSIONS):
         raise HTTPException(status_code=400, detail="Unsupported file format.")
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
-    with open(file_path, "wb") as buffer:
-        buffer.write(await file.read())
-    try:
-        parse_and_validate_scl(file_path)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    return {"status": "SUCCESS"}
 
-def parse_appid_int(appid_str: str) -> int:
-    if not appid_str or appid_str in ["—", "AUTO", "NONE"]:
-        return -1
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    # Parse a temporary copy first so a failed re-upload never replaces a previously accepted file.
+    temp_path = file_path + ".part"
+    with open(temp_path, "wb") as buffer:
+        buffer.write(await file.read())
+
     try:
-        return int(appid_str, 16)
-    except ValueError:
-        try:
-            return int(appid_str)
-        except ValueError:
-            return -1
+        parsed = parse_scl(temp_path)
+    except SCLParseError as e:
+        os.remove(temp_path)
+        logger.warning("Rejected upload %s: %s", filename, e)
+        raise HTTPException(status_code=422, detail=f"{filename}: {e}")
+    os.replace(temp_path, file_path)
+
+    conn = get_db_connection()
+    try:
+        store_parsed(conn, filename, parsed)
+        conn.commit()
+    finally:
+        conn.close()
+    logger.info("Accepted upload %s: IEDs %s, %d GOOSE control blocks, %d bound inputs, %d vendor subscription records",
+                filename, ", ".join(ied[0] for ied in parsed.ieds), len(parsed.gse_controls), len(parsed.extrefs),
+                len(parsed.vendor_subscriptions))
+    return {"status": "SUCCESS", "file": filename, "ieds": [ied[0] for ied in parsed.ieds]}
+
+
+def _analysis():
+    conn = get_db_connection()
+    try:
+        return analyze(conn)
+    finally:
+        conn.close()
+
 
 @app.get("/api/v1/graph-data")
 def get_graph_data():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    ieds = cursor.execute("SELECT * FROM ieds").fetchall()
-    links = cursor.execute("SELECT * FROM goose_links").fetchall()
-    
-    nodes_payload = [dict(ied) for ied in ieds]
-    edges_payload = []
-    
-    publishers_registry = []
-    subscribers_registry = []
-    
-    for link in links:
-        link_dict = dict(link)
-        parts = link_dict["xpath"].split("||")
-        filename = parts[0]
-        mode = parts[1]
-        
-        if mode == "PUB":
-            publishers_registry.append({
-                "ied": link_dict["publisher"],
-                "dataset": parts[2],
-                "cb_name": link_dict["app_id"],
-                "filename": filename,
-                "conf_rev": parts[3],
-                "cb_appid": parts[4],
-                "vlan_id": parts[5],
-                "vlan_priority": parts[6],
-                "mac_address": parts[7],
-                "min_time": parts[8] if len(parts) > 8 else "—",
-                "max_time": parts[9] if len(parts) > 9 else "—"
-            })
-        elif mode == "SUBSCRIBE":
-            subscribers_registry.append({
-                "pub_ied": link_dict["publisher"],
-                "sub_ied": link_dict["subscriber"],
-                "cb_name": link_dict["app_id"],
-                "filename": filename,
-                "expected_rev": parts[2],
-                "expected_appid": parts[3] if len(parts) > 3 else "AUTO"
-            })
+    result = _analysis()
+    return {"nodes": result["nodes"], "edges": result["edges"]}
 
-    cursor.execute("""
-        DELETE FROM validation_errors 
-        WHERE rule_type IN (
-            'CONF_REV_MISMATCH', 
-            'APPID_MISMATCH', 
-            'VLAN_MISMATCH',
-            'DECOUPLED_GHOST_IMPORT', 
-            'ORPHANED_STREAM', 
-            'APPID_COLLISION', 
-            'MULTICAST_MAC_DUPLICATE'
-        )
-    """)
-
-    # AppID & MAC collision validations...
-    appid_map = {}
-    collided_cb_keys = set()
-    for pub in publishers_registry:
-        raw_appid = pub["cb_appid"].strip().upper().zfill(4)
-        appid_int = parse_appid_int(raw_appid)
-        if 0 <= appid_int <= 0x3FFF:
-            cb_key = f"{pub['ied']}||{pub['cb_name']}"
-            appid_map.setdefault(raw_appid, []).append((pub, cb_key))
-
-    for appid_val, entries in appid_map.items():
-        if len(entries) > 1:
-            for pub_item, cb_key in entries:
-                collided_cb_keys.add(cb_key)
-                cursor.execute(
-                    "INSERT INTO validation_errors (ied_name, severity, rule_type, message, xpath) VALUES (?,?,?,?,?)",
-                    (pub_item["ied"], "ERROR", "APPID_COLLISION",
-                     f"Critical APPID Collision: Stream '{pub_item['cb_name']}' on '{pub_item['ied']}' reuses reserved APPID '{appid_val}'.",
-                     f"{pub_item['filename']}||GSEControl")
-                )
-
-    edge_counter = 1
-    parallel_track_matrix = {}
-
-    for pub in publishers_registry:
-        has_linked_receiver = False
-        pub_cb_key = f"{pub['ied']}||{pub['cb_name']}"
-        
-        for sub in subscribers_registry:
-            if pub["ied"] == sub["pub_ied"] and pub["cb_name"] == sub["cb_name"]:
-                has_linked_receiver = True
-                wire_id = f"e-{edge_counter}"
-                
-                sub_rev = pub["conf_rev"] if sub["expected_rev"] in ["AUTO", "—", ""] else sub["expected_rev"]
-                sub_appid = pub["cb_appid"] if sub["expected_appid"] in ["AUTO", "—", ""] else sub["expected_appid"]
-                pub_vlan = pub["vlan_id"] if pub["vlan_id"] else "000"
-
-                is_rev_match = (str(pub["conf_rev"]).strip() == str(sub_rev).strip())
-                is_appid_match = (str(pub["cb_appid"]).strip().upper() == str(sub_appid).strip().upper())
-
-                if not is_rev_match:
-                    cursor.execute(
-                        "INSERT INTO validation_errors (ied_name, severity, rule_type, message, xpath) VALUES (?,?,?,?,?)",
-                        (sub["sub_ied"], "ERROR", "CONF_REV_MISMATCH", 
-                         f"Revision Mismatch on '{pub['cb_name']}': Publisher has '{pub['conf_rev']}', Subscriber expected '{sub_rev}'. Target edge: {wire_id}", 
-                         wire_id)
-                    )
-
-                if pub_cb_key in collided_cb_keys:
-                    color_state = "RED"
-                elif not is_rev_match or not is_appid_match:
-                    color_state = "YELLOW"
-                else:
-                    color_state = "GREEN"
-
-                wire_key = f"{pub['ied']}->{sub['sub_ied']}"
-                current_idx = parallel_track_matrix.get(wire_key, 0)
-                parallel_track_matrix[wire_key] = current_idx + 1
-
-                edges_payload.append({
-                    "id": edge_counter,
-                    "publisher": pub["ied"],
-                    "subscriber": sub["sub_ied"],
-                    "app_id": pub["cb_name"],
-                    "color_state": color_state,
-                    "edge_index": current_idx,
-                    "is_orphan_stub": False,
-                    "network_details": {
-                        "dataset": pub["dataset"],
-                        "cb_name": pub["cb_name"],
-                        "appid": pub["cb_appid"],
-                        "mac_address": pub["mac_address"],
-                        "vlan_id": pub_vlan,
-                        "vlan_priority": pub["vlan_priority"],
-                        "pub_rev": pub["conf_rev"],
-                        "min_time": pub["min_time"],
-                        "max_time": pub["max_time"],
-                        "sub_rev": sub_rev,
-                        "sub_appid": sub_appid,
-                        "sub_vlan": pub_vlan,
-                        "sub_pri": pub["vlan_priority"],
-                        "sub_mac": pub["mac_address"]
-                    }
-                })
-                edge_counter += 1
-
-        # -------------------------------------------------------------------------
-        # ORPHANED STREAM: FLOATING OUTBOUND TERMINAL STUB PATTERN
-        # -------------------------------------------------------------------------
-        if not has_linked_receiver:
-            wire_id = f"e-{edge_counter}"
-            
-            cursor.execute(
-                "INSERT INTO validation_errors (ied_name, severity, rule_type, message, xpath) VALUES (?,?,?,?,?)",
-                (pub["ied"], "WARNING", "ORPHANED_STREAM", 
-                 f"Orphaned GOOSE Stream: Control Block '{pub['cb_name']}' has 0 global subscribers listening.", 
-                 wire_id)
-            )
-
-            edges_payload.append({
-                "id": edge_counter,
-                "publisher": pub["ied"],
-                "subscriber": pub["ied"],  # Self-targeting for layout coordinate binding
-                "app_id": pub["cb_name"],
-                "color_state": "AMBER",
-                "edge_index": 0,
-                "is_orphan_stub": True, # Triggers floating terminal stub rendering
-                "network_details": {
-                    "dataset": pub["dataset"],
-                    "cb_name": pub["cb_name"],
-                    "appid": pub["cb_appid"],
-                    "mac_address": pub["mac_address"],
-                    "vlan_id": pub["vlan_id"] or "000",
-                    "vlan_priority": pub["vlan_priority"],
-                    "pub_rev": pub["conf_rev"],
-                    "min_time": pub["min_time"],
-                    "max_time": pub["max_time"],
-                    "sub_rev": "NONE",
-                    "sub_appid": "0 LISTENERS",
-                    "sub_vlan": "NONE",
-                    "sub_pri": "NONE",
-                    "sub_mac": pub["mac_address"]
-                }
-            })
-            edge_counter += 1
-
-    conn.commit()
-    conn.close()
-    return {"nodes": nodes_payload, "edges": edges_payload}
 
 @app.get("/api/v1/errors")
 def get_errors():
+    return _analysis()["errors"]
+
+
+@app.get("/api/v1/files")
+def list_files():
+    """Uploaded files in upload order, with the IEDs each one contains."""
     conn = get_db_connection()
-    cursor = conn.cursor()
-    errors = cursor.execute("SELECT * FROM validation_errors").fetchall()
-    conn.close()
-    return [dict(err) for err in errors]
+    try:
+        files = conn.execute("SELECT name, seq FROM files ORDER BY seq").fetchall()
+        ieds = {}
+        for row in conn.execute("SELECT source_file, name FROM ieds ORDER BY name"):
+            ieds.setdefault(row["source_file"], []).append(row["name"])
+        return [{"name": f["name"], "order": f["seq"], "ieds": ieds.get(f["name"], [])} for f in files]
+    finally:
+        conn.close()
+
+
+@app.delete("/api/v1/files/{filename}")
+def delete_file(filename: str):
+    filename = os.path.basename(filename)
+    conn = get_db_connection()
+    try:
+        if not remove_file(conn, filename):
+            raise HTTPException(status_code=404, detail=f"{filename} is not in the workspace.")
+        conn.commit()
+    finally:
+        conn.close()
+    path = os.path.join(UPLOAD_DIR, filename)
+    if os.path.exists(path):
+        os.remove(path)
+    logger.info("Removed %s from the workspace", filename)
+    return {"status": "REMOVED", "file": filename}
+
+
+class IedSource(BaseModel):
+    source_file: Optional[str] = None  # None: back to "latest upload wins"
+
+
+@app.put("/api/v1/ieds/{ied_name}/source")
+def set_ied_source(ied_name: str, body: IedSource):
+    """Choose which uploaded file is authoritative for an IED (e.g. its own CID rather than a copy in a subscriber's file)."""
+    conn = get_db_connection()
+    try:
+        files = [r["source_file"] for r in conn.execute("SELECT source_file FROM ieds WHERE name = ?", (ied_name,))]
+        if not files:
+            raise HTTPException(status_code=404, detail=f"IED '{ied_name}' is not in any uploaded file.")
+        if body.source_file is None:
+            conn.execute("DELETE FROM ied_sources WHERE ied_name = ?", (ied_name,))
+        elif body.source_file not in files:
+            raise HTTPException(status_code=400, detail=f"'{body.source_file}' does not contain IED '{ied_name}'.")
+        else:
+            conn.execute("INSERT OR REPLACE INTO ied_sources (ied_name, source_file) VALUES (?, ?)", (ied_name, body.source_file))
+        conn.commit()
+    finally:
+        conn.close()
+    logger.info("Authoritative file for %s: %s", ied_name, body.source_file or "latest upload")
+    return {"ied": ied_name, "source_file": body.source_file}
+
+
+CAPTURE_EXTENSIONS = (".pcap", ".pcapng", ".cap")
+
+
+@app.post("/api/v1/captures")
+async def upload_capture(file: UploadFile = File(...)):
+    """Read a Wireshark capture, summarise its GOOSE streams and keep only the summary (not the raw packets)."""
+    name = os.path.basename(file.filename or "")
+    if not name.lower().endswith(CAPTURE_EXTENSIONS):
+        raise HTTPException(status_code=400, detail="Captures must be .pcap or .pcapng files.")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "capture")
+        with open(path, "wb") as f:
+            while chunk := await file.read(1 << 20):
+                f.write(chunk)
+        try:
+            summary = summarize_capture(path)
+        except CaptureError as e:
+            logger.warning("Rejected capture %s: %s", name, e)
+            raise HTTPException(status_code=422, detail=f"{name}: {e}")
+    totals = summary["totals"]
+    if totals["goose_frames"] == 0:
+        raise HTTPException(status_code=422, detail=f"{name}: no GOOSE frames (EtherType 0x88B8) in {totals['frames']} packets. "
+                                                    f"Capture on the wired port connected to the station bus, e.g. with the filter 'ether proto 0x88b8'.")
+    conn = get_db_connection()
+    try:
+        seq = conn.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM captures").fetchone()[0]
+        conn.execute("INSERT OR REPLACE INTO captures (name, seq, summary_json) VALUES (?, ?, ?)", (name, seq, json.dumps(summary)))
+        conn.commit()
+    finally:
+        conn.close()
+    logger.info("Accepted capture %s: %d packets, %d GOOSE frames, %d streams, %d undecodable",
+                name, totals["frames"], totals["goose_frames"], len(summary["streams"]), totals["decode_errors"])
+    return {"status": "SUCCESS", "capture": name, "goose_frames": totals["goose_frames"], "streams": len(summary["streams"])}
+
+
+@app.get("/api/v1/captures")
+def list_captures():
+    return _analysis()["captures"]
+
+
+@app.delete("/api/v1/captures/{name}")
+def delete_capture(name: str):
+    conn = get_db_connection()
+    try:
+        if not conn.execute("DELETE FROM captures WHERE name = ?", (os.path.basename(name),)).rowcount:
+            raise HTTPException(status_code=404, detail=f"{name} is not loaded.")
+        conn.commit()
+    finally:
+        conn.close()
+    logger.info("Removed capture %s", name)
+    return {"status": "REMOVED", "capture": name}
+
+
+def _report():
+    conn = get_db_connection()
+    try:
+        return build_report(conn)
+    finally:
+        conn.close()
+
+
+@app.get("/api/v1/report.html", response_class=HTMLResponse)
+def report_html():
+    """Printable validation report (open in a browser and print to PDF)."""
+    return HTMLResponse(render_html(_report()))
+
+
+def _csv_download(content, name):
+    filename = f"voltflow-{name}-{date.today().isoformat()}.csv"
+    return Response(content, media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@app.get("/api/v1/report/links.csv")
+def report_links_csv():
+    return _csv_download(links_csv(_report()), "links")
+
+
+@app.get("/api/v1/report/findings.csv")
+def report_findings_csv():
+    return _csv_download(findings_csv(_report()), "findings")
+
+
+@app.post("/api/v1/compare")
+async def compare_versions(before: UploadFile = File(...), after: UploadFile = File(...), format: str = "json"):
+    """Compare two versions of a project file. Nothing is stored; the workspace is not touched."""
+    if format not in ("json", "html"):
+        raise HTTPException(status_code=400, detail="format must be 'json' or 'html'.")
+    parsed, names = [], []
+    with tempfile.TemporaryDirectory() as tmp:
+        for role, upload in (("before", before), ("after", after)):
+            name = os.path.basename(upload.filename or "")
+            if not name.lower().endswith(ALLOWED_EXTENSIONS):
+                raise HTTPException(status_code=400, detail=f"{role} file '{name}': unsupported file format.")
+            path = os.path.join(tmp, f"{role}_{name}")
+            with open(path, "wb") as f:
+                f.write(await upload.read())
+            try:
+                parsed.append(parse_scl(path))
+            except SCLParseError as e:
+                raise HTTPException(status_code=422, detail=f"{role} file '{name}': {e}")
+            names.append(name)
+    diff = compare_scl(parsed[0], parsed[1], names[0], names[1])
+    logger.info("Compared %s -> %s: %s", names[0], names[1], diff["summary"])
+    return HTMLResponse(render_compare_html(diff)) if format == "html" else diff
+
 
 @app.delete("/api/v1/reset")
 def reset_workspace():
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM ieds")
-    cursor.execute("DELETE FROM goose_links")
-    cursor.execute("DELETE FROM validation_errors")
-    conn.commit()
-    conn.close()
-    if os.path.exists(UPLOAD_DIR): shutil.rmtree(UPLOAD_DIR)
+    try:
+        clear_all(conn)
+        conn.commit()
+    finally:
+        conn.close()
+    if os.path.exists(UPLOAD_DIR):
+        shutil.rmtree(UPLOAD_DIR)
     os.makedirs(UPLOAD_DIR, exist_ok=True)
+    logger.info("Workspace reset: all uploads and parsed data cleared")
     return {"status": "CLEARED"}

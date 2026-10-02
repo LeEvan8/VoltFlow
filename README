@@ -1,5 +1,31 @@
-in root directory, run:
+VoltFlow - IEC 61850 GOOSE configuration validator
+
+Backend (from the root directory):
+pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 
-cd voltflow-ui 
+Frontend:
+cd voltflow-ui
+npm install
 npm run dev
+
+The frontend calls http://localhost:8000 by default. To use another backend URL,
+copy voltflow-ui/.env.example to voltflow-ui/.env.local and set VITE_API_URL.
+
+Tests (from the root directory):
+python -m pytest
+
+Frontend checks:
+cd voltflow-ui
+npm run lint
+npm run build
+
+The local database (voltflow.db) is rebuilt automatically when its schema changes;
+re-upload your SCL files afterwards.
+
+Reports (also available from "Export report" in the UI):
+GET  /api/v1/report.html          printable validation report (print to PDF from the browser)
+GET  /api/v1/report/links.csv     every link with per-parameter results
+GET  /api/v1/report/findings.csv  every finding with its IEC 61850 reference
+POST /api/v1/compare              compare two versions of a file (form fields: before, after;
+                                  ?format=html for a printable page); nothing is stored
